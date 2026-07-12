@@ -12,10 +12,12 @@ Task 2 는 **Task 1 과 완전히 동일한 분할 목표 + 사전 시뮬레이�
 
 컨테이너 I/O 계약 (Grand Challenge, `--network none`, 비root user)
 ==================================================================
-    입력  /input/pelvic-fracture-ct.mha            (읽기전용, CT 볼륨)
-    입력  /input/peripelvic-fragment-clicks.json   (읽기전용, 클릭 좌표+라벨)
-    출력  /output/pelvic-fracture-segmentation.mha (쓰기, 정수 라벨 0/1–200)
+    입력  /input/images/<slug>/<uuid>.mha          (읽기전용, CT 볼륨 — GC 이미지 인터페이스; glob으로 탐색)
+    입력  /input/peripelvic-fragment-clicks.json   (읽기전용, 클릭 좌표+라벨 — JSON은 /input 직하)
+    출력  /output/images/pelvic-fracture-segmentation/<입력파일명>.mha  (쓰기, 정수 라벨 0/1–200)
     모델  /opt/ml/model/                            (model.tar.gz 해제 트리, 읽기전용)
+    ※ 입력 CT는 flat 경로가 아니라 GC 규약 `/input/images/<slug>/`에 들어온다 → `_resolve_input_ct`가
+      glob(`/input/images/**/*.mha`)로 robust 탐색. 출력도 `/output/images/<slug>/` 아래(배포 Task1과 동일).
 
 경로는 환경변수로 덮어쓸 수 있고(로컬 테스트), 파일명이 GC 에서 달라질 때를 대비해
 robust glob 으로도 탐색한다. 로컬 실행:
@@ -71,8 +73,11 @@ DEFAULT_INPUT_CT = os.environ.get("PENGWIN_INPUT_CT", "/input/pelvic-fracture-ct
 DEFAULT_INPUT_CLICKS = os.environ.get(
     "PENGWIN_INPUT_CLICKS", "/input/peripelvic-fragment-clicks.json"
 )
-DEFAULT_OUTPUT_SEG = os.environ.get(
-    "PENGWIN_OUTPUT_SEG", "/output/pelvic-fracture-segmentation.mha"
+# ⚠️ GC 규약: 세그멘테이션(이미지) 출력은 `/output/images/<interface-slug>/<파일명>.mha` 아래에 둔다
+#    (배포 Task1 컨테이너와 동일 규약; flat `/output/*.mha`면 GC가 결과를 못 찾는다). 파일명은 입력
+#    CT 파일명을 그대로 쓴다(Task1 검증된 관례). slug = task2 스펙의 출력 인터페이스 "pelvic-fracture-segmentation".
+DEFAULT_OUTPUT_DIR = os.environ.get(
+    "PENGWIN_OUTPUT_DIR", "/output/images/pelvic-fracture-segmentation"
 )
 
 # 클릭 point `name` 의 뼈 키워드 → family. (Femur 만 femur, 나머지 3뼈는 pelvic.)
@@ -306,12 +311,17 @@ def _resolve_input_clicks(explicit=None):
     return explicit or DEFAULT_INPUT_CLICKS
 
 
-def _resolve_output_seg(explicit=None):
-    """출력 경로 결정 + 부모 디렉터리 생성."""
-    out = explicit or DEFAULT_OUTPUT_SEG
-    parent = os.path.dirname(out) or "."
-    os.makedirs(parent, exist_ok=True)
-    return out
+def _resolve_output_seg(ct_path, explicit=None):
+    """출력 경로 = GC 이미지 인터페이스 규약 `/output/images/<slug>/<입력CT파일명>` + 부모 디렉터리 생성.
+
+    로컬 테스트로 `explicit`(파일경로)를 주면 그걸 그대로 쓴다. 컨테이너(GC)에선 입력 CT 파일명을
+    그대로 이어받아 `DEFAULT_OUTPUT_DIR` 아래에 둔다(Task1 배포 컨테이너와 동일).
+    """
+    if explicit:
+        os.makedirs(os.path.dirname(explicit) or ".", exist_ok=True)
+        return explicit
+    os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+    return os.path.join(DEFAULT_OUTPUT_DIR, os.path.basename(str(ct_path)))
 
 
 def _write_zero_seg(ref_img, out_path, reason):
@@ -398,7 +408,7 @@ def run(input_ct=None, input_clicks=None, output_seg=None):
 
     ct_path = _resolve_input_ct(input_ct)
     clicks_path = _resolve_input_clicks(input_clicks)
-    out_path = _resolve_output_seg(output_seg)
+    out_path = _resolve_output_seg(ct_path, output_seg)
     log(f"start: ct={ct_path} clicks={clicks_path} out={out_path}")
 
     # CT 는 반드시 필요(ref geometry). 못 읽으면 출력 자체가 불가 → 에러 종료.
