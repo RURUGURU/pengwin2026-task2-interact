@@ -1,0 +1,21 @@
+# PENGWIN 2026 Task 2 (PENGWIN-Interact) — 컨테이너 requirements (Task 1 세그 스택 재사용).
+# CUDA 11.8 wheels are pulled from the official PyTorch index; everything
+# else is from PyPI.
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+torch==2.1.2+cu118
+torchvision==0.16.2+cu118
+
+# nnU-Net v2 + its custom-head dependencies.
+nnunetv2==2.5.1
+dynamic-network-architectures>=0.3.1
+batchgeneratorsv2>=0.2.1
+acvl-utils>=0.2.3
+
+# Imaging / processing.
+SimpleITK==2.3.1
+numpy>=1.24,<2
+scipy>=1.10
+scikit-image>=0.21
+scikit-learn>=1.3   # V320 embedding-decode mean-shift clustering (greedy fallback if absent)
+tqdm

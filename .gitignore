@@ -1,0 +1,56 @@
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyc
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtual envs ----------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# --- Editors / OS ----------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Model weights & checkpoints (NEVER commit; GitHub 100 MB limit) -------
+*.pth
+*.pt
+*.ckpt
+*.tar.gz
+*.tar
+
+# --- Model payload (uploaded separately to Grand Challenge Models tab) -----
+/model_payload/
+
+# --- Medical imaging data / arrays (NEVER commit) --------------------------
+*.mha
+*.nii
+*.nii.gz
+*.npz
+*.npy
+
+# --- nnU-Net working dirs (huge) -------------------------------------------
+/nnunet/
+/predictions/
+/code_task1/result/
+/code_task1/predictions/
+
+# --- Logs / scratch --------------------------------------------------------
+*.log
+/tmp/
+/scratch/
