@@ -123,6 +123,11 @@ PELVIC_ANATOMIES = ("Sacrum", "LeftHip", "RightHip")
 # If enabled, missing/incompatible router artifacts fail fast to avoid silently
 # deploying the old Ds539 volume-ratio route.
 TARGET_ROUTER_ENABLED = os.environ.get("PENGWIN_TARGET_ROUTER", "0") == "1"
+# [v2.4] Below this RF decision margin (|2p-0.5|) the router stops trusting itself and takes a
+# 3-way vote with the official rule + Stage-1 anatomy evidence. Measured min margin over all 340
+# training cases = 0.9052 (zero cases below 0.90), so the default 0.85 never fires on known data
+# and the deployed routing is unchanged. 0 disables the gate entirely.
+ROUTER_ABSTAIN_MARGIN = float(os.environ.get("PENGWIN_ROUTER_ABSTAIN_MARGIN", "0.85"))
 TARGET_ROUTER_PATH = Path(
     os.environ.get(
         "PENGWIN_TARGET_ROUTER_PATH",
@@ -864,7 +869,56 @@ def route_from_ds539_masks(ds539_masks: dict) -> tuple[str, tuple[str, ...]]:
     return "multi", kept
 
 
-def route_from_target_family_router(image_path: Path) -> tuple[str, tuple[str, ...]] | None:
+def classify_pelvic_femur_rule(spacing_x, spacing_y, spacing_z, physical_x_mm, physical_z_mm):
+    """The organizers' official pelvic/femur decision tree, transcribed verbatim from the guidelines.
+
+    Organizers: *"participants can separate pelvic/femur with a rule derived from image spacing and
+    physical FOV. **The test sets have been verified to conform to this rule.**"*
+
+    ⚠️ MEASURED ON OUR 340 TRAINING CASES (2026-07-21): this rule agrees with the GT family only
+    **172/340 = 50.6%**, and on the 168 cases where it disagrees with the deployed RandomForest the
+    rule is right **0/168** while the RF is right **168/168**. Direction: 154 rule=pelvic/GT=femur,
+    14 rule=femur/GT=pelvic. It is NOT an orientation bug (all prelim CTs are already LPS).
+    Conclusion: the thresholds are tuned to the organizers' curated acquisition protocol, which our
+    7-institution training data does not match. The rule is therefore used ONLY as a weak prior in
+    the abstention branch below, and NEVER to override a confident RF.
+    """
+    if physical_x_mm <= 285.35:
+        if spacing_x <= 0.71:
+            return "pelvic"
+        elif spacing_z <= 0.90:
+            return "femur"
+        else:
+            return "pelvic" if spacing_y <= 0.91 else "femur"
+    else:
+        if spacing_z <= 0.68:
+            return "pelvic" if physical_z_mm <= 193.55 else "femur"
+        else:
+            return "pelvic" if physical_z_mm <= 390.78 else "femur"
+
+
+def _family_evidence_from_ds539(ds539_masks: dict | None) -> tuple[str | None, float]:
+    """Direct image evidence: femur voxels vs pelvic voxels in the Stage-1 anatomy argmax.
+
+    Free — Stage-1 already ran before routing. Returns (family|None, femur_fraction).
+    Deliberately NOT used on its own: Ds539 confidently hallucinates cross-family bone (a femur-only
+    scan in the GC logs got LeftHip=51,226 voxels across 22 CCs), which is exactly why pure
+    Ds539-volume routing scored GC instance F1 0.572 vs 0.940 for the RF.
+    """
+    if not ds539_masks:
+        return None, float("nan")
+    fem = int(ds539_masks["Femur"].sum()) if ds539_masks.get("Femur") is not None else 0
+    pel = sum(int(ds539_masks[a].sum()) for a in PELVIC_ANATOMIES
+              if ds539_masks.get(a) is not None)
+    tot = fem + pel
+    if tot <= 0:
+        return None, float("nan")
+    frac = fem / tot
+    return ("femur" if frac >= 0.5 else "pelvic"), frac
+
+
+def route_from_target_family_router(image_path: Path,
+                                    ds539_masks: dict | None = None) -> tuple[str, tuple[str, ...]] | None:
     if not TARGET_ROUTER_ENABLED:
         return None
 
@@ -880,6 +934,45 @@ def route_from_target_family_router(image_path: Path) -> tuple[str, tuple[str, .
     from target_family_router import predict_family
 
     family, p_femur = predict_family(image_path, _TARGET_ROUTER_PAYLOAD)
+    source = "target-router"
+
+    # --- [v2.4] OOD abstention gate ------------------------------------------------------------
+    # Measured on all 340 training cases (2026-07-21): the RF is correct 340/340 and its decision
+    # margin |2p-0.5| never drops below 0.9052 -- there are ZERO cases below 0.90. So with the
+    # default threshold 0.85 this branch is a provable NO-OP on every case we can measure, and the
+    # deployed rank-10 routing is bit-identical.
+    #
+    # It exists only for a genuinely out-of-distribution test scan where the RF is less certain than
+    # anything it ever saw in training. There we do NOT trust the RF blindly; we combine the two
+    # independent signals we have -- the organizers' rule (guaranteed on the TEST set, useless on
+    # ours) and the Stage-1 anatomy evidence (real image content, but hallucination-prone).
+    #
+    # Deliberately NOT the symmetric "rule AND RF must agree, else tiebreak" design: the rule
+    # disagrees with the RF on 49.4% of our cases and is wrong on 100% of those disagreements, so
+    # letting it trigger a tiebreak would hand half of all routing decisions to the 0.572-F1 signal.
+    # Set PENGWIN_ROUTER_ABSTAIN_MARGIN=0 to hard-disable, or raise it to widen the safety net.
+    margin = abs(float(p_femur) - 0.5) * 2.0 if np.isfinite(p_femur) else 1.0
+    if margin < ROUTER_ABSTAIN_MARGIN:
+        try:
+            _r = sitk.ImageFileReader()
+            _r.SetFileName(str(image_path))
+            _r.ReadImageInformation()
+            sx, sy, sz = _r.GetSpacing()
+            dx, dy, dz = _r.GetSize()
+            rule_family = classify_pelvic_femur_rule(sx, sy, sz, sx * dx, sz * dz)
+        except Exception as exc:  # noqa: BLE001
+            rule_family = None
+            log(f"target-router: official rule unavailable ({exc})")
+        anat_family, femur_frac = _family_evidence_from_ds539(ds539_masks)
+        votes = [v for v in (family, rule_family, anat_family) if v]
+        winner = max(set(votes), key=votes.count) if votes else family
+        log(f"target-router: LOW CONFIDENCE margin={margin:.4f} < {ROUTER_ABSTAIN_MARGIN} "
+            f"-> vote rf={family} rule={rule_family} anatomy={anat_family} "
+            f"(femur_frac={femur_frac:.3f}) => {winner}")
+        if winner != family:
+            source = "target-router-abstain"
+            family = winner
+
     if family == "femur":
         anatomies = ("Femur",)
     elif family == "pelvic":
@@ -888,10 +981,11 @@ def route_from_target_family_router(image_path: Path) -> tuple[str, tuple[str, .
         raise ValueError(f"target-router predicted unsupported family {family!r}")
 
     if np.isfinite(p_femur):
-        log(f"target-router: family={family} p_femur={p_femur:.4f} -> anatomies={anatomies}")
+        log(f"target-router: family={family} p_femur={p_femur:.4f} margin={margin:.4f} "
+            f"-> anatomies={anatomies}")
     else:
         log(f"target-router: family={family} p_femur=nan -> anatomies={anatomies}")
-    return f"target-router:{family}", anatomies
+    return f"{source}:{family}", anatomies
 
 
 # ---------------------------------------------------------------------------
@@ -1012,7 +1106,7 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         anatomies = tuple(forced_anatomies)
         log(f"L2b routing: forced anatomies={anatomies}")
     else:
-        router_route = route_from_target_family_router(image_path)
+        router_route = route_from_target_family_router(image_path, ds539_masks)
         if router_route is not None:
             _route, anatomies = router_route
             used_target_router = True
