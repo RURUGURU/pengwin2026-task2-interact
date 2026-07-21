@@ -80,6 +80,25 @@ DEFAULT_OUTPUT_DIR = os.environ.get(
     "PENGWIN_OUTPUT_DIR", "/output/images/pelvic-fracture-segmentation"
 )
 
+# 출력 slug 후보 (2026-07-21 추가).
+#
+# 문제: Task 2 의 출력 인터페이스 slug 가 문서상 확정되지 않았다. docs/challenge/02-*.md:12 은
+# "pelvic-fracture-segmentation" 이라 적고 있으나, **같은 스타일의 문서 줄이 Task 1 에서는 틀린 전례가
+# 있다** — 01-*.md:9 은 "peripelvic-fracture-segmentation" 이라 하지만 실제 GC 채점된 배포 컨테이너는
+# "peripelvic-fracture-ct-segmentation" 을 쓴다(01-*.md:83 과 일치). PENGWIN-2024 공식 템플릿도
+# 입력 pelvic-fracture-ct ↔ 출력 pelvic-fracture-**ct**-segmentation 로 짝지어져 있다.
+# slug 가 틀리면 GC 는 산출물을 임포트하지 못하고 해당 런은 실패 처리된다.
+#
+# 대응: (1) /input/inputs.json 이 있으면 그것이 런타임 권위 소스이므로 거기서 읽는다.
+#       (2) 없으면 후보 slug 전부에 동일한 .mha 를 쓴다. GC 는 **선언된 소켓만** 임포트하고 나머지
+#           디렉터리는 무시하므로 부작용이 없다(디스크 수십 MB 뿐).
+OUTPUT_SLUG_CANDIDATES = (
+    "pelvic-fracture-segmentation",
+    "pelvic-fracture-ct-segmentation",
+    "peripelvic-fracture-ct-segmentation",
+    "peripelvic-fracture-segmentation",
+)
+
 # 클릭 point `name` 의 뼈 키워드 → family. (Femur 만 femur, 나머지 3뼈는 pelvic.)
 _FEMUR_KEYWORDS = ("femur",)
 _PELVIC_KEYWORDS = ("hip", "ilium", "sacrum", "pelvi")  # 실데이터 "Left Hip"/"Right Hip" 포함
@@ -320,8 +339,81 @@ def _resolve_output_seg(ct_path, explicit=None):
     if explicit:
         os.makedirs(os.path.dirname(explicit) or ".", exist_ok=True)
         return explicit
-    os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
-    return os.path.join(DEFAULT_OUTPUT_DIR, os.path.basename(str(ct_path)))
+    out_dir = DEFAULT_OUTPUT_DIR
+    if not os.environ.get("PENGWIN_OUTPUT_DIR"):
+        # 런타임 권위 소스가 있으면 그것을 최우선으로 쓴다(헤지보다 정확하다).
+        slug = _slug_from_inputs_json()
+        if slug:
+            out_dir = os.path.join("/output/images", slug)
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, os.path.basename(str(ct_path)))
+
+
+def _slug_from_inputs_json():
+    """`/input/inputs.json` 에서 출력 이미지 소켓 slug 를 읽는다(런타임 권위 소스). 없으면 None.
+
+    GC 는 각 job 의 `/input/inputs.json` 에 선언된 인터페이스 목록을 넣어준다. 이름 키는 GC 버전에
+    따라 `slug` / `interface.slug` 등으로 나타나므로 재귀적으로 훑어 후보와 매칭한다. 실패는 전부
+    무시하고 None 을 돌려준다 — 이 함수는 어떤 경우에도 추론을 막으면 안 된다.
+    """
+    path = os.environ.get("PENGWIN_INPUTS_JSON", "/input/inputs.json")
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as fh:
+            blob = json.load(fh)
+    except Exception as exc:  # noqa: BLE001
+        log(f"inputs.json 읽기 실패(무시): {exc}")
+        return None
+
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, val in node.items():
+                if key in ("slug", "interface_slug") and isinstance(val, str):
+                    found.append(val)
+                walk(val)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(blob)
+    for slug in found:
+        if "segmentation" in slug:
+            log(f"inputs.json 에서 출력 slug 확인: {slug}")
+            return slug
+    log(f"inputs.json 에 segmentation slug 없음 (본 slug: {sorted(set(found))})")
+    return None
+
+
+def _mirror_output(out_path):
+    """이미 기록된 산출물을 나머지 후보 slug 디렉터리로 복사한다(slug 불확실성 헤지).
+
+    `explicit`/`PENGWIN_OUTPUT_DIR` 로 경로를 직접 지정한 로컬 테스트에서는 아무것도 하지 않는다.
+    실패는 로그만 남기고 삼킨다 — 헤지가 본 산출물을 위험에 빠뜨리면 안 된다.
+    """
+    import shutil
+
+    if os.environ.get("PENGWIN_OUTPUT_DIR"):
+        return
+    out_path = str(out_path)
+    parent = os.path.dirname(out_path)
+    if os.path.basename(os.path.dirname(parent)) != "images":
+        return  # GC 규약 경로가 아님(로컬 테스트) → 헤지 안 함
+    images_root = os.path.dirname(parent)
+    name = os.path.basename(out_path)
+    for slug in OUTPUT_SLUG_CANDIDATES:
+        target_dir = os.path.join(images_root, slug)
+        target = os.path.join(target_dir, name)
+        if os.path.abspath(target) == os.path.abspath(out_path):
+            continue
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            shutil.copyfile(out_path, target)
+            log(f"slug 헤지 복사 → {target}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"slug 헤지 복사 실패(무시) {target}: {exc}")
 
 
 def _write_zero_seg(ref_img, out_path, reason):
@@ -336,6 +428,7 @@ def _write_zero_seg(ref_img, out_path, reason):
     zero.SetDirection(ref_img.GetDirection())
     sitk.WriteImage(zero, str(out_path), useCompression=False)
     log(f"ALL-ZERO 세그 저장 ({reason}) → {out_path}")
+    _mirror_output(out_path)
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +531,15 @@ def run(input_ct=None, input_clicks=None, output_seg=None):
             f"분할 저장 완료 → {out_path} "
             f"(shape={label_arr.shape}, n_labels={len(uniq)}, head={uniq[:10].tolist()})"
         )
+        # 자기진단: 전부 배경이면 파이프라인이 조용히 죽은 것이다. GC 는 exit 0 만 보고 GREEN 으로
+        # 기록하므로 로그에 크게 남겨야 사후에 잡을 수 있다(예: DS538_FOLD 불일치로 가중치 로드 실패).
+        if len(uniq) <= 1:
+            log(
+                "!!! 경고: 산출물이 전부 배경(라벨 1종)이다. 정상 결과가 아니다. "
+                "PENGWIN_DS538_FOLD 와 model tarball 의 fold 디렉터리 일치 여부, "
+                "그리고 Stage-1/Stage-2 가중치 로드 로그(w0sum)를 확인하라."
+            )
+        _mirror_output(out_path)
         return out_path
     except Exception as exc:  # noqa: BLE001
         # 어떤 예외에도 all-zero 세그를 출력해 컨테이너가 완주하도록 한다.
@@ -472,7 +574,14 @@ def main() -> int:
             import SimpleITK as sitk
 
             ct_path = _resolve_input_ct(args[0] if len(args) >= 1 else None)
-            out_path = _resolve_output_seg(args[2] if len(args) >= 3 else None)
+            # NOTE(2026-07-21): the single positional used to bind to `ct_path`, not `explicit`
+            # (signature is _resolve_output_seg(ct_path, explicit=None)). On GC there is no argv, so
+            # ct_path became None and the fallback wrote a file literally named "None" with no
+            # extension, which GC cannot import -> the last-resort safety net produced an
+            # unreadable output instead of a valid all-zero mask. Pass both positions explicitly.
+            out_path = _resolve_output_seg(
+                ct_path, args[2] if len(args) >= 3 else None
+            )
             ref_img = sitk.ReadImage(ct_path)
             _write_zero_seg(ref_img, out_path, f"main fallback: {exc}")
             return 0

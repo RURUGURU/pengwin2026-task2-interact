@@ -17,5 +17,9 @@ SimpleITK==2.3.1
 numpy>=1.24,<2
 scipy>=1.10
 scikit-image>=0.21
-scikit-learn>=1.3   # V320 embedding-decode mean-shift clustering (greedy fallback if absent)
+# PINNED — Task 1 배포본(rank 10)과 정확히 동일하게 맞춘다. Stage-1 target-family RandomForest 는
+# model tarball 안의 pickle(./stage1_router/stage1_target_router_fold0.joblib)로 로드되며,
+# 버전이 어긋나면 경고와 함께 미묘하게 다른 트리를 읽거나 실패한다.
+scikit-learn==1.6.1  # v2.0 target-family router runtime
+joblib==1.5.3
 tqdm

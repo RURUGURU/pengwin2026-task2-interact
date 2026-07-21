@@ -202,7 +202,7 @@ if __name__ == "__main__":
     cases = sys.argv[1:] or ["294", "256", "271", "286", "290", "021"]
     T = float(__import__('os').environ.get("AGGLO_T", "0.45"))
     def gtcount(c):
-        g = glob.glob(f'/home/guest/Project/PENGWIN2026/data/task1_2/extracted/*/{c}/label.mha')
+        g = glob.glob(f'{__import__("os").environ.get("PENGWIN_ROOT", ".")}/data/task1_2/extracted/*/{c}/label.mha')
         a = sitk.GetArrayFromImage(sitk.ReadImage(g[0]))
         return {n: len([i for i in np.unique(a) if lo <= i <= hi]) for n, (lo, hi) in RANGES.items()
                 if any(lo <= i <= hi for i in np.unique(a))}

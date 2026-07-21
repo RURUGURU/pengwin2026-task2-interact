@@ -809,8 +809,18 @@ def merge_masks_with_sanity(ds539_masks, bone_masks, image_shape,
 def estimate_fracture_inference_seconds(bbox, patch_size=(192, 160, 224), seconds_per_patch=2.5):
     """Layer 3: Ds538 sliding-window 추론 소요 시간 대략 추정.
 
-    patch_size 는 Ds538 3d_fullres plan 의 patch_size [192,160,224] (z,y,x) 와 일치.
     nnUNet 의 sliding window 는 tile_step_size=0.5 이므로 patch 의 50% 씩 이동한다.
+
+    ⚠️ [2026-07-21 감사] "plan 의 patch_size [192,160,224] 와 일치" 라는 종전 서술은 **거짓**이다.
+    V308/V302 의 plans.json 실측 patch_size 는 **[256,160,160]** 이고, 이 함수는 raw crop 을 타일링하는데
+    실제 추론은 plan spacing 으로 리샘플된 crop 을 타일링한다(실 CT z=1.0mm vs plan 0.801mm → ×1.25).
+    680개 실 bbox 측정: 평균 추정 4.99 타일 vs 실제 7.31 타일, ROI 의 70.6% 에서 **과소추정** =
+    ETA 가 ~46% 낙관적이고 오차 방향이 안전하지 않다(가드가 늦게 걸린다).
+
+    그래도 **값은 고치지 않는다**: 명목 pelvic 케이스가 ~51 타일 ≈ ~130s 로 480s 예산 대비 여유가 크고
+    가드가 실제로 걸리지 않는다. 상수를 바꾸면 rank-10 배포본의 런타임 동작이 바뀐다(가드가 더 자주 걸려
+    해부부위를 0 으로 내보낼 수 있다). **실질적 교훈은 부정형이다 — 추론에 비용 레버(Stage-1/2 앙상블,
+    TTA, tile_step_size↓)를 추가하지 마라.** 실패 모드가 우아한 0 이 아니라 출력조차 없는 하드 타임아웃이다.
     축별 patch 개수 = ceil((dim - patch) / (patch * 0.5)) + 1.
     이를 곱한 총 patch 수에 patch 당 평균 추론 시간을 곱해 ETA 를 구한다.
     """
@@ -1148,7 +1158,8 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             # agglo_decode.py is VENDORED next to this file so it ships in the GC container; also add
             # the dev experiments/ dir as a fallback for local runs. (numpy/scipy/skimage only.)
             for _p in (os.path.dirname(os.path.abspath(__file__)),
-                       "/home/guest/Project/PENGWIN2026/experiments"):
+                       os.path.join(os.environ.get("PENGWIN_ROOT", "/nonexistent"),
+                                    "code_task1", "experiments")):
                 if _p not in _sys.path:
                     _sys.path.insert(0, _p)
             from agglo_decode import decode_affinity_agglo, decode_fusion

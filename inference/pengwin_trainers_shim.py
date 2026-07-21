@@ -19,7 +19,9 @@ trainer class를 찾을 수 있도록 합니다.
 import os
 import sys
 
-_CODE_DIR = "/opt/app/code_task1"
+# 컨테이너 기본값은 /opt/app/code_task1 (Dockerfile 의 COPY 위치). 로컬 dev 에서는
+# PENGWIN_CODE_DIR 로 override 해 같은 파일을 그대로 site-packages 에 넣어 쓸 수 있다.
+_CODE_DIR = os.environ.get("PENGWIN_CODE_DIR", "/opt/app/code_task1")
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 

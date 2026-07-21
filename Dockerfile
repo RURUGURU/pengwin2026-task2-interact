@@ -68,17 +68,34 @@ ENV PENGWIN_ROOT=/opt/ml/model \
     MPLCONFIGDIR=/tmp/matplotlib \
     XDG_CACHE_HOME=/tmp/.cache
 
-# --- Model selection (Task 1 배포 v1.9 = V308 fold_all 과 동일) -------------
-# Stage-2 fracture net = STU-Net Affinity V308(fold_all), affinity agglomeration decode(T=0.45).
+# --- Model selection (Task 1 배포 v2.2 = rank 10 과 동일) --------------------
+# Stage-2 fracture net = STU-Net Affinity V308(fold_0), affinity agglomeration decode(T=0.45).
 # Stage-1 anatomy = V301(fold_0). fusion/bone-reconcile OFF(코드엔 있으나 env 로 비활성).
-# Task 2 는 이 동일 모델 tarball 을 재사용하고, family 라우팅만 클릭으로 대체한다.
+# Task 2 는 이 동일 모델 tarball(model_v2_2.tar.gz)을 재사용하고, family 라우팅만 클릭으로 대체한다.
+#
+# !! PENGWIN_DS538_FOLD 는 반드시 0 이어야 한다. "all" 이 아니다 !!
+# 이 블록은 Task 1 의 stale v1.9 Dockerfile 에서 복사되어 DS538_FOLD=all 을 물려받았다. 그 값이 유효했던
+# model_v1_9.tar.gz 는 이미 삭제되었고, 현존하는 tarball(model_v2_2 / model_v2_3)에는
+#     nnunet/results/Dataset538_.../PengwinTrainerSTUNetBaseAffinityV308__.../fold_0/checkpoint_best.pth
+# 하나뿐이다 (fold_all 디렉터리 없음). task1_pipeline.py 가 use_folds=("all",) 을 만들면 nnunetv2 2.5.1 이
+# isfile 검사도 fallback 도 없이 torch.load(.../fold_all/...) 을 시도 → 예외 → inference.py 의 포괄 except →
+# _write_zero_seg → return 0. 즉 Grand Challenge 는 "성공(GREEN)" 으로 기록하면서 전 케이스 0점을 준다.
+# 2026-07-21 검증. `tar tzf <model>.tar.gz | grep fold_all` 이 비어있지 않음을 확인하기 전에는 되돌리지 말 것.
+#
+# PENGWIN_TARGET_ROUTER=1 은 RF pelvic/femur 라우터를 켠다 (코드 기본값은 OFF).
+# Task 2 에서는 클릭이 해부부위 튜플을 강제하므로 라우터 경로는 정상적으로는 도달하지 않는다
+# (실제 클릭 1360개 전수 검사: pelvic 680 / femur 680, family=None 0건). 따라서 이 플래그는
+# 클릭 JSON 이 없거나 파싱 불가한 퇴화 케이스를 위한 무료 보험이다 — 그 경우에만 라우터가 쓰이고,
+# 없으면 pre-v2.0 Ds539 부피비 라우팅(GC instance F1 0.572)으로 조용히 퇴화한다.
 ENV PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308 \
-    PENGWIN_DS538_FOLD=all \
+    PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
     PENGWIN_AFFINITY_DECODE=1 \
     PENGWIN_AGGLO_T=0.45 \
     PENGWIN_FUSION_DECODE=0 \
-    PENGWIN_STAGEA_BONE_RECONCILE=0
+    PENGWIN_STAGEA_BONE_RECONCILE=0 \
+    PENGWIN_TARGET_ROUTER=1 \
+    PENGWIN_TARGET_ROUTER_PATH=/opt/ml/model/stage1_router/stage1_target_router_fold0.joblib
 
 # Grand Challenge security policy: container must not run as root.
 RUN groupadd -r user && useradd --no-log-init -r -g user user
