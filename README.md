@@ -18,7 +18,7 @@
 | **배포 버전** | **v1.2** — git tag `v1.2` (커밋 `8e783d8`, v1.1과 내용 동일한 릴리스 라벨). val 페이즈 제출용 |
 | **파이프라인** | 클릭 파싱 → **family 라우팅 확정** → Stage-A `V301`(해부, fold_0) → Stage-B `V308`(골절 affinity, **fold_0**) → average-linkage agglomeration decode (`AGGLO_T=0.45`) |
 | **세그 로직** | `inference/task1_pipeline.py` = Task 1 배포 `inference.py`(태그 v2.4)의 **바이트 동일 사본** (md5 검증). 로직 중복 0 |
-| **모델 번들** | **`model_v2_2_1.tar.gz`** — Task 2 알고리즘의 Models 탭에 **별도 업로드 필요** (Task 1 것이 자동 공유되지 않음). 가중치는 v2.2(rank 10)와 md5 동일, 라우터 pickle 만 sklearn 1.6.1 네이티브로 교체(경고 302→0) |
+| **모델 번들** | **`model_v3_0.tar.gz`** — Task 2 알고리즘의 Models 탭에 **별도 업로드 필요** (Task 1 것이 자동 공유되지 않음). 가중치는 v2.2(rank 10)와 md5 동일, 라우터 pickle 만 sklearn 1.6.1 네이티브로 교체(경고 302→0) |
 | **클릭의 역할** | 해부부위(family) 라우팅을 **확정**. 실제 클릭 1360개 전수 검사에서 pelvic 680 / femur 680, 미분류 0건. 4개 클릭 전략(uniform/EDT/center-of-mass/boundary) × 340케이스 전부에서 pelvic=항상 3뼈, 뼈 누락 0건 |
 | **로컬 빌드/검증** | ✅ `pengwin-task2-interact:latest` 19.7GB 빌드 성공, shim re-export 4 클래스 확인. GC 동일조건 스모크: 클릭 파싱→라우팅→모델 로드(`w0sum` GC와 동일값)→slug 헤지 4개 기록→never-crash 계약 동작. **GPU forward 는 이 호스트(sm_120)에서 검증 불가**(컨테이너 torch 2.1.2+cu118 커널 없음; GC의 T4=sm_75 에서는 정상) |
 | **GC 채점 이력** | **아직 없음** — val 페이즈 첫 제출 예정. 제출 시 §7 스모크 검증 필수 |
@@ -355,7 +355,7 @@ OUTPUT_SLUG_CANDIDATES = (
 
 ### 7.2 모델 번들
 
-**`model_v2_2_1.tar.gz`** 를 **이 알고리즘(Task 2)의 Models 탭에 별도로** 올린다 (Task 1 것이 자동
+**`model_v3_0.tar.gz`** 를 **이 알고리즘(Task 2)의 Models 탭에 별도로** 올린다 (Task 1 것이 자동
 공유되지 않는다). 별도 학습 없음. `sha256 560dff90…`. 가중치는 v2.2(rank 10)와 md5 동일하고 라우터
 pickle 만 sklearn 1.6.1 네이티브로 교체된 판이다(1.7.2 판 `model_v2_2.tar.gz` 는 로드 시 경고 302건 →
 1.6.1 판은 0건). **`model_v2_3.tar.gz`(rank 44)를 올리지 말 것.**
