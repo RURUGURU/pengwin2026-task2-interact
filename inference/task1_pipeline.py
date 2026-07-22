@@ -924,74 +924,77 @@ def _family_evidence_from_ds539(ds539_masks: dict | None) -> tuple[str | None, f
     return ("femur" if frac >= 0.5 else "pelvic"), frac
 
 
+def official_rule_family(image_path: Path) -> str | None:
+    """The organizers' OFFICIAL pelvic/femur rule, using their EXACT axis mapping (2026-07-22 update).
+
+    They published `get_image_info` to fix a SimpleITK (x,y,z) vs numpy (z,y,x) axis-ordering bug and
+    asked all teams to adopt it; the test sets are VERIFIED to conform to this rule. We reproduce
+    get_image_info via ImageFileReader (header only — no pixel load, so this is also OOM-safe on large
+    volumes). get_image_info maps, with arr=(z,y,x) and sp=GetSpacing()=(Sx,Sy,Sz):
+        spacing_x=sp[2]=Sz, spacing_y=sp[1]=Sy, spacing_z=sp[0]=Sx,
+        physical_x_mm=sp[2]*arr.shape[2]=Sz*Wx, physical_z_mm=sp[0]*arr.shape[0]=Sx*Wz.
+    Measured on our 340 training cases: 86.8% vs GT family (vs 50.6% with the buggy straight mapping we
+    used before). Imperfect on our raw clinical training data, but GUARANTEED on the curated test set.
+    """
+    try:
+        r = sitk.ImageFileReader()
+        r.SetFileName(str(image_path))
+        r.ReadImageInformation()
+        Sx, Sy, Sz = r.GetSpacing()      # SimpleITK (x, y, z)
+        Wx, Wy, Wz = r.GetSize()         # SimpleITK (x, y, z) dims
+        return classify_pelvic_femur_rule(
+            spacing_x=Sz, spacing_y=Sy, spacing_z=Sx,
+            physical_x_mm=Sz * Wx, physical_z_mm=Sx * Wz,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log(f"official rule unavailable ({exc})")
+        return None
+
+
 def route_from_target_family_router(image_path: Path,
                                     ds539_masks: dict | None = None) -> tuple[str, tuple[str, ...]] | None:
     if not TARGET_ROUTER_ENABLED:
         return None
 
-    global _TARGET_ROUTER_PAYLOAD
-    if _TARGET_ROUTER_PAYLOAD is None:
-        from target_family_router import load_router
+    # === PRIMARY: the organizers' official rule (2026-07-22 update). ==========================
+    # They ask all teams to adopt it and the test set is verified to conform -> on the SCORED test it
+    # is 100% correct. It is AUTHORITATIVE here. The RF (validated only on our training distribution)
+    # is kept as a cross-check and as a fallback for the pathological case where the header can't be
+    # read. `PENGWIN_OFFICIAL_RULE_ROUTER=0` reverts to RF-primary (comparison / emergency).
+    use_rule = os.environ.get("PENGWIN_OFFICIAL_RULE_ROUTER", "1") == "1"
+    rule_family = official_rule_family(image_path) if use_rule else None
 
-        _TARGET_ROUTER_PAYLOAD = load_router(TARGET_ROUTER_PATH)
-        names = _TARGET_ROUTER_PAYLOAD.get("feature_names", [])
-        labels = _TARGET_ROUTER_PAYLOAD.get("labels", [])
-        log(f"target-router: loaded {TARGET_ROUTER_PATH} n_features={len(names)} labels={labels}")
+    # RF cross-check / fallback.
+    rf_family = None
+    p_femur = float("nan")
+    try:
+        global _TARGET_ROUTER_PAYLOAD
+        if _TARGET_ROUTER_PAYLOAD is None:
+            from target_family_router import load_router
+            _TARGET_ROUTER_PAYLOAD = load_router(TARGET_ROUTER_PATH)
+            log(f"target-router: loaded {TARGET_ROUTER_PATH} "
+                f"n_features={len(_TARGET_ROUTER_PAYLOAD.get('feature_names', []))} "
+                f"labels={_TARGET_ROUTER_PAYLOAD.get('labels', [])}")
+        from target_family_router import predict_family
+        rf_family, p_femur = predict_family(image_path, _TARGET_ROUTER_PAYLOAD)
+    except Exception as exc:  # noqa: BLE001
+        log(f"target-router: RF unavailable ({exc})")
 
-    from target_family_router import predict_family
-
-    family, p_femur = predict_family(image_path, _TARGET_ROUTER_PAYLOAD)
-    source = "target-router"
-
-    # --- [v2.4] OOD abstention gate ------------------------------------------------------------
-    # Measured on all 340 training cases (2026-07-21): the RF is correct 340/340 and its decision
-    # margin |2p-0.5| never drops below 0.9052 -- there are ZERO cases below 0.90. So with the
-    # default threshold 0.85 this branch is a provable NO-OP on every case we can measure, and the
-    # deployed rank-10 routing is bit-identical.
-    #
-    # It exists only for a genuinely out-of-distribution test scan where the RF is less certain than
-    # anything it ever saw in training. There we do NOT trust the RF blindly; we combine the two
-    # independent signals we have -- the organizers' rule (guaranteed on the TEST set, useless on
-    # ours) and the Stage-1 anatomy evidence (real image content, but hallucination-prone).
-    #
-    # Deliberately NOT the symmetric "rule AND RF must agree, else tiebreak" design: the rule
-    # disagrees with the RF on 49.4% of our cases and is wrong on 100% of those disagreements, so
-    # letting it trigger a tiebreak would hand half of all routing decisions to the 0.572-F1 signal.
-    # Set PENGWIN_ROUTER_ABSTAIN_MARGIN=0 to hard-disable, or raise it to widen the safety net.
-    margin = abs(float(p_femur) - 0.5) * 2.0 if np.isfinite(p_femur) else 1.0
-    if margin < ROUTER_ABSTAIN_MARGIN:
-        try:
-            _r = sitk.ImageFileReader()
-            _r.SetFileName(str(image_path))
-            _r.ReadImageInformation()
-            sx, sy, sz = _r.GetSpacing()
-            dx, dy, dz = _r.GetSize()
-            rule_family = classify_pelvic_femur_rule(sx, sy, sz, sx * dx, sz * dz)
-        except Exception as exc:  # noqa: BLE001
-            rule_family = None
-            log(f"target-router: official rule unavailable ({exc})")
-        anat_family, femur_frac = _family_evidence_from_ds539(ds539_masks)
-        votes = [v for v in (family, rule_family, anat_family) if v]
-        winner = max(set(votes), key=votes.count) if votes else family
-        log(f"target-router: LOW CONFIDENCE margin={margin:.4f} < {ROUTER_ABSTAIN_MARGIN} "
-            f"-> vote rf={family} rule={rule_family} anatomy={anat_family} "
-            f"(femur_frac={femur_frac:.3f}) => {winner}")
-        if winner != family:
-            source = "target-router-abstain"
-            family = winner
-
-    if family == "femur":
-        anatomies = ("Femur",)
-    elif family == "pelvic":
-        anatomies = PELVIC_ANATOMIES
+    # Decision: rule is authoritative; RF is fallback only when the rule could not be computed.
+    if rule_family in ("pelvic", "femur"):
+        family, source = rule_family, "official-rule"
+        if rf_family and rf_family != rule_family:
+            log(f"router NOTE: RF={rf_family} disagrees with official rule={rule_family}; "
+                f"trusting the rule (organizer-mandated, test-guaranteed). p_femur={p_femur:.4f}")
+    elif rf_family in ("pelvic", "femur"):
+        family, source = rf_family, "rf-fallback"
+        log("router: official rule unavailable -> RF fallback")
     else:
-        raise ValueError(f"target-router predicted unsupported family {family!r}")
+        return None  # both failed -> caller falls back to Ds539 volume route
 
-    if np.isfinite(p_femur):
-        log(f"target-router: family={family} p_femur={p_femur:.4f} margin={margin:.4f} "
-            f"-> anatomies={anatomies}")
-    else:
-        log(f"target-router: family={family} p_femur=nan -> anatomies={anatomies}")
+    anatomies = ("Femur",) if family == "femur" else PELVIC_ANATOMIES
+    log(f"router: family={family} source={source} rule={rule_family} rf={rf_family} "
+        f"p_femur={p_femur:.4f} -> anatomies={anatomies}")
     return f"{source}:{family}", anatomies
 
 
