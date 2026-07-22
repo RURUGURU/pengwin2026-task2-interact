@@ -40,6 +40,7 @@ femur ROI 는 bone-skeleton 분해(pelvic 전용)에 의존하지 않고 Ds539 a
 /opt/ml/model 로 변하지 않는다.
 """
 from __future__ import annotations
+import gc  # [2026-07-22 mem] module-level for early Ds539 frees
 
 import os
 import sys
@@ -466,10 +467,16 @@ def _predict_custom_logits_from_preprocessed_data(predictor, data, output_channe
 
 
 def softmax_axis0(logits: np.ndarray) -> np.ndarray:
-    arr = np.asarray(logits, dtype=np.float32)
-    arr = arr - np.max(arr, axis=0, keepdims=True)
-    exp = np.exp(arr).astype(np.float32, copy=False)
-    return exp / np.maximum(np.sum(exp, axis=0, keepdims=True), np.float32(1e-8))
+    # [2026-07-22 mem] IN-PLACE softmax. Numerically IDENTICAL to the old 4-copy version, but holds
+    # only ONE full float32 buffer instead of ~4 (arr, arr-max, exp, exp/sum). On a 105M-voxel Ds539
+    # volume the old version spiked ~8GB here alone and OOM-killed the container (GC memory limit).
+    # `np.array(..., dtype=float32)` always copies, so the input `logits` (incl. an fp16 device buffer)
+    # is never mutated even when it is already float32.
+    arr = np.array(logits, dtype=np.float32)
+    arr -= np.max(arr, axis=0, keepdims=True)
+    np.exp(arr, out=arr)
+    arr /= np.maximum(np.sum(arr, axis=0, keepdims=True), np.float32(1e-8))
+    return arr
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1063,11 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         ds539_predictor, ds539_image_4d, ds539_props, output_channels=DS539_OUTPUT_CHANNELS,
     )
     ds539_probs_pp = softmax_axis0(ds539_logits_pp)
+    # [2026-07-22 mem] logits(fp16, ~1GB on a 105M vol) are only needed for the softmax above; free
+    # them before the resample allocates more full-volume float32 buffers, or the peak OOM-kills the
+    # container on large CTs. (Was previously del'd ~100 lines later alongside probs.)
+    del ds539_logits_pp
+    gc.collect()
     # nnUNet preprocessed grid 의 prob 를 원본 CT 격자로 다시 resampling (linear interp)
     from nnunetv2.preprocessing.resampling.default_resampling import resample_data_or_seg_to_shape
     from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice
@@ -1065,18 +1077,22 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
     transpose_backward = ds539_predictor.plans_manager.transpose_backward
     original_spacing = [ds539_data_props["spacing"][i] for i in transpose_forward]
     probs_resampled_axes = resample_data_or_seg_to_shape(
-        ds539_probs_pp.astype(np.float32, copy=False),
+        ds539_probs_pp,   # already float32, contiguous
         shape_after_cropping, current_spacing, original_spacing,
         is_seg=False, order=1, order_z=0,
     )
+    del ds539_probs_pp   # resample made its own output; free the plan-grid probs
+    gc.collect()
     shape_before_cropping = tuple(int(s) for s in ds539_data_props["shape_before_cropping"])
     bbox_used = ds539_data_props.get("bbox_used_for_cropping", None)
-    probs_full_axes = np.zeros((DS539_OUTPUT_CHANNELS, *shape_before_cropping), dtype=np.float32)
     if bbox_used is None:
         probs_full_axes = np.asarray(probs_resampled_axes, dtype=np.float32)
     else:
+        probs_full_axes = np.zeros((DS539_OUTPUT_CHANNELS, *shape_before_cropping), dtype=np.float32)
         slicer = bounding_box_to_slice(bbox_used)
         probs_full_axes[(slice(None), *slicer)] = np.asarray(probs_resampled_axes, dtype=np.float32)
+        del probs_resampled_axes
+        gc.collect()
     # cropping bbox 바깥 영역은 fg 가 비어 있으므로 background prob 를 1 로 채워 정상화
     fg_sum = probs_full_axes[1:].sum(axis=0)
     bg_mask = fg_sum < 1e-6
@@ -1162,9 +1178,11 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         anatomies=anatomies,
     )
 
-    # Ds538 모델 로딩 전에 Ds539 관련 텐서를 해제해 GPU 메모리 확보
-    del ds539_predictor, ds539_logits_pp, ds539_probs_pp, probs_resampled_axes, probs_full_axes
-    import gc, torch
+    # Ds538 모델 로딩 전에 Ds539 관련 텐서를 해제해 GPU 메모리 확보.
+    # [2026-07-22 mem] ds539_logits_pp / ds539_probs_pp / probs_resampled_axes 는 위에서 이미 조기
+    # 해제됨(대용량 볼륨 OOM 방지). 남은 것만 정리한다.
+    del ds539_predictor, probs_full_axes
+    import torch  # gc 는 모듈 레벨
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
