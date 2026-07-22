@@ -3,26 +3,27 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![nnU-Net v2](https://img.shields.io/badge/nnU--Net-2.5.1-blue.svg)](https://github.com/MIC-DKFZ/nnUNet)
 [![Backbone: STU-Net-B](https://img.shields.io/badge/backbone-STU--Net--B%2058M-green.svg)](https://github.com/uni-medical/STU-Net)
-[![Task 1 pipeline](https://img.shields.io/badge/reuses-Task%201%20v2.2%20(rank%2010)-orange.svg)](https://github.com/RURUGURU/pengwin2026-task1-abbc)
+[![Task 1 pipeline](https://img.shields.io/badge/reuses-Task%201%20v2.4%20(rank%2010%20base)-orange.svg)](https://github.com/RURUGURU/pengwin2026-task1-abbc)
 
 > **PENGWIN 2026 Grand Challenge — Task 2**: Task 1과 동일한 골절 조각 instance 분할이되, **사전 시뮬레이션된 클릭(point prompt)** 이 함께 주어진다.
 >
-> 본 저장소는 **검증된 Task 1 v2.2 캐스케이드(GC rank 10)를 그대로 재사용**하고, 클릭을 **해부부위 라우팅 결정에 주입**하는 방식으로 Task 2를 푼다. 세그멘테이션 로직을 새로 만들지 않는 것이 설계의 핵심이다.
+> 본 저장소는 **검증된 Task 1 캐스케이드(GC rank 10 기준 = v2.2, 현행 v2.4)를 그대로 재사용**하고, 클릭을 **해부부위 라우팅 결정에 주입**하는 방식으로 Task 2를 푼다. 세그멘테이션 로직을 새로 만들지 않는 것이 설계의 핵심이다.
 
 ---
 
-## 🚀 현재 배포 상태 (2026-07-21, v1.0)
+## 🚀 현재 배포 상태 (2026-07-22, **v1.2**)
 
 | | |
 |---|---|
-| **배포 버전** | **v1.0** — git tag `v1.0` push → GC 자동 빌드 |
+| **배포 버전** | **v1.2** — git tag `v1.2` (커밋 `8e783d8`, v1.1과 내용 동일한 릴리스 라벨). val 페이즈 제출용 |
 | **파이프라인** | 클릭 파싱 → **family 라우팅 확정** → Stage-A `V301`(해부, fold_0) → Stage-B `V308`(골절 affinity, **fold_0**) → average-linkage agglomeration decode (`AGGLO_T=0.45`) |
-| **모델 번들** | Task 1과 **동일한** `model_v2_2.tar.gz` 재사용 (별도 학습 없음) |
-| **세그 로직** | `inference/task1_pipeline.py` = Task 1 배포 `inference.py` 의 **바이트 동일 사본**. 로직 중복 0 |
-| **클릭의 역할** | 해부부위(family) 라우팅을 **확정**. 실제 클릭 1360개 전수 검사에서 pelvic 680 / femur 680, 미분류 0건 |
-| **GC 채점 이력** | **아직 없음** — 본 컨테이너는 미채점 상태. 첫 제출 시 반드시 스모크 검증할 것(아래 §7) |
+| **세그 로직** | `inference/task1_pipeline.py` = Task 1 배포 `inference.py`(태그 v2.4)의 **바이트 동일 사본** (md5 검증). 로직 중복 0 |
+| **모델 번들** | **`model_v2_2_1.tar.gz`** — Task 2 알고리즘의 Models 탭에 **별도 업로드 필요** (Task 1 것이 자동 공유되지 않음). 가중치는 v2.2(rank 10)와 md5 동일, 라우터 pickle 만 sklearn 1.6.1 네이티브로 교체(경고 302→0) |
+| **클릭의 역할** | 해부부위(family) 라우팅을 **확정**. 실제 클릭 1360개 전수 검사에서 pelvic 680 / femur 680, 미분류 0건. 4개 클릭 전략(uniform/EDT/center-of-mass/boundary) × 340케이스 전부에서 pelvic=항상 3뼈, 뼈 누락 0건 |
+| **로컬 빌드/검증** | ✅ `pengwin-task2-interact:latest` 19.7GB 빌드 성공, shim re-export 4 클래스 확인. GC 동일조건 스모크: 클릭 파싱→라우팅→모델 로드(`w0sum` GC와 동일값)→slug 헤지 4개 기록→never-crash 계약 동작. **GPU forward 는 이 호스트(sm_120)에서 검증 불가**(컨테이너 torch 2.1.2+cu118 커널 없음; GC의 T4=sm_75 에서는 정상) |
+| **GC 채점 이력** | **아직 없음** — val 페이즈 첫 제출 예정. 제출 시 §7 스모크 검증 필수 |
 
-> ⚠️ **v1.0 은 3개의 배포 차단 결함을 고친 첫 정상 버전이다.** 이전 커밋(`e6e651f`)은 Task 1의 낡은 v1.9 Dockerfile을 복사해 왔기 때문에 **전 케이스 0점을 GREEN으로 위장하는 버그**를 갖고 있었다. 상세는 §6.
+> ⚠️ **v1.0 은 3개의 배포 차단 결함을 고친 첫 정상 버전이다.** 이전 커밋(`e6e651f`)은 Task 1의 낡은 v1.9 Dockerfile을 복사해 왔기 때문에 **전 케이스 0점을 GREEN으로 위장하는 버그**를 갖고 있었다. v1.1 은 벤더링 코드를 Task 1 v2.4(라우터 OOD abstention)로 동기화, v1.2 는 val 제출용 릴리스 라벨. 상세는 §6.
 
 ## 목차
 
@@ -333,20 +334,31 @@ OUTPUT_SLUG_CANDIDATES = (
 ```
 .
 ├── Dockerfile                       GC 컨테이너 정의 (모델 선택 ENV 포함)
-├── requirements.txt                 torch 2.1.2+cu118 / nnunetv2 2.5.1 / sklearn 1.7.2 핀
+├── requirements.txt                 torch 2.1.2+cu118 / nnunetv2 2.5.1 / scikit-learn 1.6.1 핀
 ├── inference/
-│   ├── inference.py                 ★ Task 2 진입점 (클릭 파싱 + 라우팅 주입)
-│   ├── task1_pipeline.py            Task 1 배포 inference.py 의 바이트 동일 사본
-│   ├── agglo_decode.py              average-linkage agglomeration 디코드
-│   ├── target_family_router.py      37-feature RF family 라우터
-│   └── pengwin_trainers_shim.py     nnUNet trainer discovery shim
-├── code_task1/                      학습측 단일 소스 미러 (컨테이너 런타임 import 대상)
+│   ├── inference.py                 ★ Task 2 고유 진입점 (클릭 파싱 + 라우팅 주입) — 컨테이너 내 유일한 Task-2 전용 코드
+│   ├── task1_pipeline.py            Task 1 배포 inference.py(v2.4) 의 바이트 동일 사본
+│   ├── agglo_decode.py              average-linkage agglomeration 디코드 (Task 1 벤더링)
+│   ├── target_family_router.py      37-feature RF family 라우터 (Task 1 벤더링)
+│   └── pengwin_trainers_shim.py     nnUNet trainer discovery shim (Task 1 벤더링)
+├── code_task1/                      ★ Task 1 코드베이스 벤더링 (core.py/loss.py/model.py …).
+│                                    shim 이 여기서 `import core` 로 PengwinTrainer 클래스를 로드한다.
+│                                    이름이 code_task1 인 것은 의도적 — Task 2 는 Task 1 세그 스택을
+│                                    그대로 재사용하므로 code_task2 로 바꾸면 안 된다(Dockerfile COPY /
+│                                    PYTHONPATH / shim `_CODE_DIR` 이 이 경로에 의존).
 └── scripts/build_image.sh
 ```
 
+> **컨테이너 안에서 "Task 2 고유" 코드는 `inference/inference.py` 하나뿐이다.** 나머지(`code_task1/`,
+> `task1_pipeline.py`, `agglo_decode.py`, 라우터, shim)는 전부 Task 1 배포본에서 그대로 가져온 것이다.
+> 프로젝트 루트의 `code_task2/`(dev 스캐폴드)는 배포 repo 와 무관하며 컨테이너에 들어가지 않는다.
+
 ### 7.2 모델 번들
 
-Task 1과 **동일한** `model_v2_2.tar.gz`를 GC Models 탭에 올린다. 별도 학습 없음.
+**`model_v2_2_1.tar.gz`** 를 **이 알고리즘(Task 2)의 Models 탭에 별도로** 올린다 (Task 1 것이 자동
+공유되지 않는다). 별도 학습 없음. `sha256 560dff90…`. 가중치는 v2.2(rank 10)와 md5 동일하고 라우터
+pickle 만 sklearn 1.6.1 네이티브로 교체된 판이다(1.7.2 판 `model_v2_2.tar.gz` 는 로드 시 경고 302건 →
+1.6.1 판은 0건). **`model_v2_3.tar.gz`(rank 44)를 올리지 말 것.**
 
 ```
 /opt/ml/model/
