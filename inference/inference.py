@@ -460,10 +460,13 @@ def run_task1_cascade(ct_image, image_path, points, routing):
     )
 
     # [Stage-2 seed 훅] 좌표계 확정 후 여기서 생성한 seed 를 run_per_anatomy 의 decode 에
-    # 주입한다(현재는 문서/디버그용 — 라우팅만 활성). 실패해도 무해(빈 리스트).
+    # 주입한다. 좌표 매핑(orig->LPS->pp)과 주입 메커니즘은 CPU 로 검증 완료; 실제 주입은
+    # PENGWIN_CLICK_INJECT 게이트로 활성화한다(기본 OFF → 배포 라우팅 동작 그대로). 실패해도 무해(빈 리스트).
+    seeds = []
     try:
         seeds = clicks_to_voxel_seeds(points, ct_image)
-        log(f"[seed 훅] 클릭 seed {len(seeds)}개 준비(주입은 좌표계 확정 후 활성화)")
+        log(f"[seed 훅] 클릭 seed {len(seeds)}개 준비 (주입 게이트 PENGWIN_CLICK_INJECT="
+            f"{os.environ.get('PENGWIN_CLICK_INJECT', '0')})")
     except Exception as exc:  # noqa: BLE001
         log(f"[seed 훅] seed 변환 실패 ({exc}) — 무시하고 라우팅만으로 진행")
 
@@ -482,9 +485,10 @@ def run_task1_cascade(ct_image, image_path, points, routing):
     except Exception as exc:  # noqa: BLE001
         log(f"bone-skeleton preroute 실패 ({exc}) — fallback mask 없이 진행")
 
-    # 핵심 호출: forced anatomies(클릭)로 Task1 캐스케이드 구동.
+    # 핵심 호출: forced anatomies(클릭)로 Task1 캐스케이드 구동. seeds 는 PENGWIN_CLICK_INJECT
+    # 게이트 하에서만 decode 에 주입된다(기본 OFF → 배포 동작 동일).
     label_arr = t1.run_per_anatomy(
-        Path(image_path), ct_image, prerouted_bone_masks, anatomies=forced
+        Path(image_path), ct_image, prerouted_bone_masks, anatomies=forced, seeds=seeds
     )
     return label_arr
 

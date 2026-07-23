@@ -489,12 +489,17 @@ def decode_abbc_core_seed_watershed(
     core_threshold: float = CORE_THRESHOLD,
     min_component_voxels: int = MIN_COMPONENT_VOXELS,
     size_ratio_keep: float = ANATOMY_SIZE_RATIO_KEEP,
+    seeds_pp: "list | None" = None,
 ) -> np.ndarray:
     """V288 core-seed watershed 로 ABBC 확률맵을 fragment instance 라벨로 디코딩한다.
 
     ABBC 채널 의미: 0=background, 1=border, 2=boundary, 3=core.
     core 영역을 seed 로 두고 background 가 아닌 영역(support) 전체로 watershed 를 확장한다.
     반환값은 uint16 라벨 1..N (배경은 0).
+
+    seeds_pp (Task 2 click injection): pp-grid (z,y,x) click markers. When given, a merged core CC
+    (two touching fragments sharing one core CC) is split into one instance per click. Default None
+    -> behaviour is byte-identical to the deployed decode.
     """
     import scipy.ndimage as ndi
 
@@ -505,6 +510,10 @@ def decode_abbc_core_seed_watershed(
     core = (probs[3] >= float(core_threshold)) & support
     core_labels, n_core = ndi.label(core, structure=np.ones((3, 3, 3), dtype=bool))
     core_labels = core_labels.astype(np.int32, copy=False)
+    _seeded_ids = ()
+    if seeds_pp:
+        core_labels, _seeded_ids = _inject_click_seeds(core_labels, support, seeds_pp)
+        n_core = int(core_labels.max())
     if int(n_core) <= 0:
         labels = np.where(support, 1, 0).astype(np.int32, copy=False)
     else:
@@ -521,20 +530,24 @@ def decode_abbc_core_seed_watershed(
             labels[fill_mask] = labels[
                 tuple(idx[fill_mask] for idx in nearest_indices)
             ]
-    decoded = _merge_small_components(labels, min_component_voxels=int(min_component_voxels))
+    decoded = _merge_small_components(labels, min_component_voxels=int(min_component_voxels),
+                                      protect_ids=_seeded_ids)
     if float(size_ratio_keep) > 0.0:
-        decoded = _merge_by_size_ratio(decoded, size_ratio_keep=float(size_ratio_keep))
+        decoded = _merge_by_size_ratio(decoded, size_ratio_keep=float(size_ratio_keep),
+                                       protect_ids=_seeded_ids)
     return decoded.astype(np.uint16, copy=False)
 
 
-def _merge_small_components(labels: np.ndarray, *, min_component_voxels: int) -> np.ndarray:
+def _merge_small_components(labels: np.ndarray, *, min_component_voxels: int, protect_ids=()) -> np.ndarray:
     import scipy.ndimage as ndi
 
     out = np.asarray(labels, dtype=np.int32).copy()
     if int(min_component_voxels) <= 1:
         return out
+    _protect = set(int(i) for i in protect_ids)  # click-seeded fragments never reabsorbed
     ids, counts = np.unique(out, return_counts=True)
-    small_ids = [int(i) for i, c in zip(ids, counts) if int(i) > 0 and int(c) < int(min_component_voxels)]
+    small_ids = [int(i) for i, c in zip(ids, counts)
+                 if int(i) > 0 and int(c) < int(min_component_voxels) and int(i) not in _protect]
     if not small_ids:
         return out
     small_mask = np.isin(out, small_ids)
@@ -550,17 +563,18 @@ def _merge_small_components(labels: np.ndarray, *, min_component_voxels: int) ->
     return out
 
 
-def _merge_by_size_ratio(labels: np.ndarray, *, size_ratio_keep: float) -> np.ndarray:
+def _merge_by_size_ratio(labels: np.ndarray, *, size_ratio_keep: float, protect_ids=()) -> np.ndarray:
     import scipy.ndimage as ndi
 
     out = np.asarray(labels, dtype=np.int32).copy()
+    _protect = set(int(i) for i in protect_ids)  # click-seeded fragments never reabsorbed
     ids, counts = np.unique(out, return_counts=True)
     pairs = [(int(i), int(c)) for i, c in zip(ids, counts) if int(i) > 0]
     if len(pairs) <= 1:
         return out
     largest = max(c for _, c in pairs)
     threshold = float(size_ratio_keep) * float(largest)
-    small_ids = [i for i, c in pairs if float(c) < threshold]
+    small_ids = [i for i, c in pairs if float(c) < threshold and int(i) not in _protect]
     if not small_ids:
         return out
     refill_mask = np.isin(out, small_ids)
@@ -570,6 +584,199 @@ def _merge_by_size_ratio(labels: np.ndarray, *, size_ratio_keep: float) -> np.nd
         nearest = ndi.distance_transform_edt(~non_zero, return_indices=True)[1]
         out[refill_mask] = out[tuple(idx[refill_mask] for idx in nearest)]
     return out
+
+
+# ---------------------------------------------------------------------------
+# [Task 2 click injection] Forced core-seed markers from user clicks.
+# Task 1 is walled by input contrast (~5% at fused fracture interfaces): the model's eroded cores of
+# two touching fragments connect into ONE CC -> the watershed emits ONE instance (a merge). Task 2
+# receives one click per fragment; stamping each as a distinct watershed marker forces the merged core
+# to split -- the one lever clicks give us that Task 1 lacks. Everything below is reached only through
+# the PENGWIN_CLICK_INJECT gate + a non-empty click list, so the deployed Task-1 decode is byte-
+# identical when clicks are absent. CPU-validated: mechanism (click_seed_mechanism_test.py),
+# orig->LPS map 20/20 (click_coord_roundtrip_test.py), exact-count re-seed 4/4
+# (click_seed_exactcount_test.py). See memory [[pengwin-task2-click-injection]].
+# ---------------------------------------------------------------------------
+def _seed_anatomy_from_name(name) -> "str | None":
+    """PENGWIN click `name` -> the pipeline anatomy it belongs to (mirrors inference.route_from_clicks)."""
+    nl = str(name).lower()
+    if "femur" in nl:
+        return "Femur"
+    if "sacrum" in nl or "sacral" in nl:
+        return "Sacrum"
+    if "left" in nl and ("hip" in nl or "ilium" in nl or "iliac" in nl):
+        return "LeftHip"
+    if "right" in nl and ("hip" in nl or "ilium" in nl or "iliac" in nl):
+        return "RightHip"
+    return None
+
+
+def _orig_zyx_to_lps_zyx(ref_img, img_lps, z, y, x):
+    """Click ORIGINAL-CT voxel (z,y,x) -> LPS-processing voxel (z,y,x). SimpleITK index order is (x,y,z).
+    VALIDATED on real RAS+LPS cases: 20/20 fragment clicks land in the correct LPS-frame fragment."""
+    phys = ref_img.TransformIndexToPhysicalPoint((int(x), int(y), int(z)))
+    ix, iy, iz = img_lps.TransformPhysicalPointToIndex(phys)
+    return int(iz), int(iy), int(ix)
+
+
+def _lps_zyx_to_pp_grid(z, y, x, anatomy_bbox, ds538_data_props, transpose_forward, pp_shape):
+    """LPS-frame voxel (z,y,x) -> Ds538 preprocessed decode-grid voxel (the `decoded_pp` frame).
+    Inverse of resample_label_map_to_original: (1) subtract the anatomy ROI bbox start, (2) apply
+    transpose_forward, (3) subtract bbox_used_for_cropping start, (4) scale by pp_shape/shape_after."""
+    crop = np.array([z - anatomy_bbox[0].start, y - anatomy_bbox[1].start, x - anatomy_bbox[2].start],
+                    dtype=np.float64)
+    internal = crop[list(transpose_forward)]
+    bbox_used = ds538_data_props.get("bbox_used_for_cropping", None)
+    if bbox_used is not None:
+        internal = internal - np.array([b[0] for b in bbox_used], dtype=np.float64)
+    shape_after = np.array(
+        [int(s) for s in ds538_data_props["shape_after_cropping_and_before_resampling"]], dtype=np.float64)
+    scale = np.array(pp_shape, dtype=np.float64) / np.maximum(shape_after, 1.0)
+    pp = np.round(internal * scale).astype(int)
+    return int(pp[0]), int(pp[1]), int(pp[2])
+
+
+def _clicks_to_pp_seeds(seeds, anatomy, ref_img, img_lps, anatomy_bbox,
+                        ds538_data_props, transpose_forward, pp_shape):
+    """Map the clicks belonging to `anatomy` to pp-grid (z,y,x) core-seed markers. Out-of-bounds seeds
+    are dropped (the support guard inside the decode additionally skips background seeds)."""
+    out = []
+    Z, Y, X = int(pp_shape[0]), int(pp_shape[1]), int(pp_shape[2])
+    for s in seeds or []:
+        if _seed_anatomy_from_name(s.get("name", "")) != anatomy:
+            continue
+        z0, y0, x0 = s["zyx"]
+        lz, ly, lx = _orig_zyx_to_lps_zyx(ref_img, img_lps, z0, y0, x0)
+        pz, py, px = _lps_zyx_to_pp_grid(lz, ly, lx, anatomy_bbox, ds538_data_props,
+                                         transpose_forward, pp_shape)
+        if 0 <= pz < Z and 0 <= py < Y and 0 <= px < X:
+            out.append((pz, py, px))
+    return out
+
+
+def _inject_click_seeds(core_labels, support, seeds_pp, radius: int = 1):
+    """Stamp click markers into the ndi.label core CCs so the watershed emits one basin per clicked
+    fragment. Core-CC-aware for EXACT counts: a core CC that receives >=2 clicks (a MERGE) has its
+    single seed deleted and is re-seeded per click; a CC with <2 clicks keeps its seed (no spurious
+    split); a background click is skipped; a click in support but no core CC gets its own recovery
+    marker (ONLY if its fragment has no core at all). Returns (core_labels, tuple(seeded_ids))."""
+    from collections import defaultdict
+    import scipy.ndimage as ndi
+    core_labels = np.asarray(core_labels, dtype=np.int32).copy()
+    Z, Y, X = core_labels.shape
+    nxt = int(core_labels.max()) + 1
+    by_cc = defaultdict(list)
+    for (z, y, x) in seeds_pp:
+        if not (0 <= z < Z and 0 <= y < Y and 0 <= x < X):
+            continue
+        if not support[z, y, x]:            # background click -> skip (guard)
+            continue
+        by_cc[int(core_labels[z, y, x])].append((z, y, x))
+    # [review fix 2026-07-22] For cc==0 clicks (in support but not in a core CC), decide recovery by the
+    # FRAGMENT, not the voxel: a click in the non-core SHELL of an already-cored fragment must NOT stamp
+    # a marker (it would spuriously split that one fragment). Compute -- from the ORIGINAL cores, before
+    # any merge-wipe -- the set of support components that already own a core basin.
+    sup_labels = None
+    has_core = set()
+    if by_cc.get(0):
+        sup_labels, _ = ndi.label(support, structure=np.ones((3, 3, 3), dtype=bool))
+        has_core = set(int(v) for v in np.unique(sup_labels[core_labels > 0])) - {0}
+    for cc, clicks in by_cc.items():        # merged core CC (>=2 clicks): wipe the single seed
+        if cc != 0 and len(clicks) >= 2:
+            core_labels[core_labels == cc] = 0
+    seeded_ids = []
+    for cc, clicks in by_cc.items():
+        if cc != 0:
+            if len(clicks) < 2:
+                continue                    # untouched single-click cored CC keeps its original seed
+        else:
+            # recover ONLY clicks whose support component has no core at all (a genuinely dropped core);
+            # shell clicks on an already-cored fragment are dropped -> no spurious split
+            clicks = [(z, y, x) for (z, y, x) in clicks if int(sup_labels[z, y, x]) not in has_core]
+            if not clicks:
+                continue
+        for (z, y, x) in clicks:
+            z0, z1 = max(z - radius, 0), min(z + radius + 1, Z)
+            y0, y1 = max(y - radius, 0), min(y + radius + 1, Y)
+            x0, x1 = max(x - radius, 0), min(x + radius + 1, X)
+            core_labels[z0:z1, y0:y1, x0:x1] = nxt
+            seeded_ids.append(nxt)
+            nxt += 1
+    return core_labels, tuple(seeded_ids)
+
+
+def apply_click_split(labels, seeds_pp, radius: int = 1):
+    """DECODE-AGNOSTIC click post-split (the deployed lever). If >=2 click markers fall in the SAME
+    decoded instance -- a MERGE the model could not see -- split that instance with a click-seeded
+    watershed restricted to the instance mask (one sub-label per click; the first click keeps the
+    original id). Instances with <2 clicks are untouched. Works identically on affinity-agglo (the
+    DEPLOYED Task-2 decode), fusion, and core-seed outputs, because it operates on the FINAL instance
+    map -- not on any decode's internals. Returns a uint16 relabeled map. CPU-only.
+
+    Why post-split rather than seeding a specific decode: the deployed container runs
+    PENGWIN_AFFINITY_DECODE=1 -> decode_affinity_agglo, so core-seed markers never execute. A post-hoc
+    split on decoded_pp is the one injection that reaches every decode path. The split surface is the
+    distance-transform midline between the clicks (a fracture-surface-guided cut would need the affinity
+    volume; the click positions already guarantee the correct instance COUNT, which drives the metric)."""
+    import scipy.ndimage as ndi
+    from skimage.segmentation import watershed as _ws
+    from collections import defaultdict
+    out = np.asarray(labels, dtype=np.int32).copy()
+    Z, Y, X = out.shape
+    by_inst = defaultdict(list)
+    for (z, y, x) in seeds_pp:
+        if 0 <= z < Z and 0 <= y < Y and 0 <= x < X:
+            L = int(out[z, y, x])
+            if L > 0:
+                by_inst[L].append((z, y, x))
+    nxt = int(out.max()) + 1
+    for inst, clist in by_inst.items():
+        if len(clist) < 2:
+            continue                              # not a merge -> leave the instance as-is
+        mask = out == inst
+        markers = np.zeros(out.shape, dtype=np.int32)
+        new_ids = [inst] + [nxt + k for k in range(len(clist) - 1)]  # first click keeps `inst`
+        for i, (z, y, x) in enumerate(clist):
+            z0, z1 = max(z - radius, 0), min(z + radius + 1, Z)
+            y0, y1 = max(y - radius, 0), min(y + radius + 1, Y)
+            x0, x1 = max(x - radius, 0), min(x + radius + 1, X)
+            sub = np.zeros(out.shape, dtype=bool)
+            sub[z0:z1, y0:y1, x0:x1] = True
+            markers[sub & mask] = new_ids[i]
+        present = set(int(v) for v in np.unique(markers)) - {0}
+        if len(present) < 2:
+            continue                              # a click's marker missed the mask -> cannot split
+        priority = ndi.distance_transform_edt(markers == 0)
+        ws = _ws(priority, markers=markers, mask=mask).astype(np.int32)
+        out[mask] = ws[mask]
+        nxt += len(clist) - 1
+    return out.astype(np.uint16, copy=False)
+
+
+def _save_click_meta(dump_dir, anatomy, bbox, ds538_data_props, predictor, pp_shape, image_path, ref_img):
+    """[click-inject validation] Persist the coord-chain metadata next to the dumped probs so the full
+    click (original-CT z,y,x) -> pp-grid map can be replayed OFFLINE on CPU (no GPU). Called only under
+    PENGWIN_DUMP_PROBS -> inert in the deployed container. Never raises."""
+    try:
+        import pickle as _pkl
+        meta = {
+            "anatomy": anatomy,
+            "anatomy_bbox": [(int(bbox[i].start), int(bbox[i].stop)) for i in range(3)],
+            "pp_shape": [int(s) for s in pp_shape],
+            "transpose_forward": [int(t) for t in predictor.plans_manager.transpose_forward],
+            "transpose_backward": [int(t) for t in predictor.plans_manager.transpose_backward],
+            "shape_after_cropping_and_before_resampling":
+                [int(s) for s in ds538_data_props["shape_after_cropping_and_before_resampling"]],
+            "shape_before_cropping": [int(s) for s in ds538_data_props["shape_before_cropping"]],
+            "bbox_used_for_cropping": ds538_data_props.get("bbox_used_for_cropping", None),
+            "spacing": [float(s) for s in ds538_data_props["spacing"]],
+            "image_path": str(image_path),
+            "orientation": orientation_code(ref_img),
+        }
+        with open(os.path.join(dump_dir, f"meta_{anatomy}.pkl"), "wb") as _f:
+            _pkl.dump(meta, _f)
+    except Exception as _e:  # dump-only helper -> never crash the pipeline
+        log(f"[dump] meta save failed ({_e})")
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1210,8 @@ def route_from_target_family_router(image_path: Path,
 # ---------------------------------------------------------------------------
 def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                     prerouted_bone_masks: dict | None = None,
-                    anatomies: tuple[str, ...] | None = None) -> np.ndarray:
+                    anatomies: tuple[str, ...] | None = None,
+                    seeds: "list | None" = None) -> np.ndarray:
     """V0.4 STU-Net 2-stage 견고화 파이프라인 (4-layer 구조):
        Layer 1: bone-skeleton anatomy 분해 (HU>200, pelvic 전용) — fallback 확보
        Layer 2: Ds539 5-class argmax refinement       — Ds539 가 합리적이면 우선 사용
@@ -1287,6 +1495,8 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                 os.makedirs(_dump_dir, exist_ok=True)
                 np.save(os.path.join(_dump_dir, f"probs13_{anatomy}.npy"),
                         np.concatenate([_abbc, _aff], axis=0).astype(np.float16))
+                _save_click_meta(_dump_dir, anatomy, bbox, ds538_data_props, ds538_predictor,
+                                 _abbc.shape[1:], image_path, ref_img)
                 log(f"[dump] saved 13ch probs {anatomy} -> {_dump_dir}")
             if os.environ.get("PENGWIN_AFF_STATS", "0") == "1":
                 _sh = _aff[:3]  # short-range channels
@@ -1313,19 +1523,56 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
             if _dump_dir:
                 os.makedirs(_dump_dir, exist_ok=True)
                 np.save(os.path.join(_dump_dir, f"probs_{anatomy}.npy"), ds538_probs.astype(np.float16))
+                _save_click_meta(_dump_dir, anatomy, bbox, ds538_data_props, ds538_predictor,
+                                 ds538_probs.shape[1:], image_path, ref_img)
                 log(f"[dump] saved ds538_probs {anatomy} -> {_dump_dir}")
             # [2026-06-06] Sacrum over-segments — its predicted core speckles into spurious islands
             # inside one dominant bone -> too many fragments. Apply an anatomy-specific aggressive
             # merge (size-ratio 0.10 + min 250 voxels) for Sacrum only; femur/hips are genuine
             # multi-fragment bones and keep the defaults (a global merge collapsed their recall).
+            # [Task 2 click injection, env-gated] map THIS anatomy's clicks to pp-grid core-seeds so a
+            # merged core splits into one instance per click. Default OFF (gate off / no clicks) ->
+            # _seeds_pp is None and decoded_pp is byte-identical to the deployed core-seed watershed.
+            _seeds_pp = None
+            if os.environ.get("PENGWIN_CLICK_INJECT", "0") == "1" and seeds:
+                try:
+                    _seeds_pp = _clicks_to_pp_seeds(
+                        seeds, anatomy, ref_img, img_lps, bbox, ds538_data_props,
+                        ds538_predictor.plans_manager.transpose_forward, ds538_probs.shape[1:],
+                    )
+                    if _seeds_pp:
+                        log(f"[click-inject:{anatomy}] {len(_seeds_pp)} pp-grid seeds from clicks")
+                except Exception as _e:  # never let click mapping crash the decode
+                    log(f"[click-inject:{anatomy}] seed map failed ({_e}) -> no injection")
+                    _seeds_pp = None
             if anatomy == "Sacrum":
                 decoded_pp = decode_abbc_core_seed_watershed(
                     ds538_probs,
                     size_ratio_keep=max(float(ANATOMY_SIZE_RATIO_KEEP), 0.10),
                     min_component_voxels=max(int(MIN_COMPONENT_VOXELS), 250),
+                    seeds_pp=_seeds_pp,
                 )
             else:
-                decoded_pp = decode_abbc_core_seed_watershed(ds538_probs)
+                decoded_pp = decode_abbc_core_seed_watershed(ds538_probs, seeds_pp=_seeds_pp)
+
+        # [Task 2 click injection, env-gated] DECODE-AGNOSTIC post-split: after WHICHEVER decode ran
+        # (affinity-agglo = deployed, fusion, or core-seed), if >=2 of THIS anatomy's clicks landed in
+        # the same decoded instance, split it with a click-seeded watershed. This is the injection that
+        # reaches the deployed PENGWIN_AFFINITY_DECODE=1 path. Default OFF (gate off / no clicks) ->
+        # decoded_pp is byte-identical to the deployed decode.
+        if os.environ.get("PENGWIN_CLICK_INJECT", "0") == "1" and seeds:
+            try:
+                _split_seeds = _clicks_to_pp_seeds(
+                    seeds, anatomy, ref_img, img_lps, bbox, ds538_data_props,
+                    ds538_predictor.plans_manager.transpose_forward, decoded_pp.shape,
+                )
+                if _split_seeds:
+                    _n0 = len(set(int(v) for v in np.unique(decoded_pp)) - {0})
+                    decoded_pp = apply_click_split(decoded_pp, _split_seeds)
+                    _n1 = len(set(int(v) for v in np.unique(decoded_pp)) - {0})
+                    log(f"[click-inject:{anatomy}] {len(_split_seeds)} click-seeds, instances {_n0}->{_n1}")
+            except Exception as _e:  # never let click injection crash the pipeline
+                log(f"[click-inject:{anatomy}] post-split failed ({_e}) -> decode unchanged")
         decoded_crop = resample_label_map_to_original(decoded_pp, ds538_data_props, ds538_predictor)
 
         # 라벨 재매핑 후 전체 볼륨에 paste
