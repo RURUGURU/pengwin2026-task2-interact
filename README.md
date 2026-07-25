@@ -11,17 +11,17 @@
 
 ---
 
-## 🚀 현재 배포 상태 (2026-07-22, **v3.0** — 통합 릴리스)
+## 🚀 현재 배포 상태 (2026-07-25, **v3.1** — 2nd place, OOM-fix)
 
 | | |
 |---|---|
-| **배포 버전** | **v3.0** — 3-태스크 통합 릴리스 태그 (내용 = v1.1/v1.2, 커밋 `693a849`). GC 빌드는 `v3.0` 선택. val 페이즈 제출용 |
+| **배포 버전** | **v3.1** — 랭크 반영(ranked/deployed) Active, **2nd place**. OOM-fix 빌드로 가중치는 v3.0과 **바이트 동일**. GC 빌드는 `v3.1` 선택. `PENGWIN_CLICK_INJECT=0`(클릭은 라우팅 전용). v3.2(공식 pelvic/femur 룰 라우터)와 v3.3(클릭 seed-injection)은 태그만 존재하며 배포 config 아님 — 특히 **v3.3 클릭 seed-injection 은 REFUTED**(val rank 9 vs v3.1 rank 2: 쉬운 val 케이스에 spurious over-split 추가)이므로 배포하지 않는다 |
 | **파이프라인** | 클릭 파싱 → **family 라우팅 확정** → Stage-A `V301`(해부, fold_0) → Stage-B `V308`(골절 affinity, **fold_0**) → average-linkage agglomeration decode (`AGGLO_T=0.45`) |
 | **세그 로직** | `inference/task1_pipeline.py` = Task 1 배포 `inference.py`(태그 v2.4)의 **바이트 동일 사본** (md5 검증). 로직 중복 0 |
 | **모델 번들** | **`model_v3_0.tar.gz`** — Task 2 알고리즘의 Models 탭에 **별도 업로드 필요** (Task 1 것이 자동 공유되지 않음). 가중치는 v2.2(rank 10)와 md5 동일, 라우터 pickle 만 sklearn 1.6.1 네이티브로 교체(경고 302→0) |
 | **클릭의 역할** | 해부부위(family) 라우팅을 **확정**. 실제 클릭 1360개 전수 검사에서 pelvic 680 / femur 680, 미분류 0건. 4개 클릭 전략(uniform/EDT/center-of-mass/boundary) × 340케이스 전부에서 pelvic=항상 3뼈, 뼈 누락 0건 |
 | **로컬 빌드/검증** | ✅ `pengwin-task2-interact:latest` 19.7GB 빌드 성공, shim re-export 4 클래스 확인. GC 동일조건 스모크: 클릭 파싱→라우팅→모델 로드(`w0sum` GC와 동일값)→slug 헤지 4개 기록→never-crash 계약 동작. **GPU forward 는 이 호스트(sm_120)에서 검증 불가**(컨테이너 torch 2.1.2+cu118 커널 없음; GC의 T4=sm_75 에서는 정상) |
-| **GC 채점 이력** | **아직 없음** — val 페이즈 첫 제출 예정. 제출 시 §7 스모크 검증 필수 |
+| **GC 채점 이력** | v3.1 = **2nd place**(deployed Active). v3.3 클릭 seed-injection 은 val rank 9 로 **REFUTED**. 제출 시 §7 스모크 검증 필수 |
 
 > ⚠️ **v1.0 은 3개의 배포 차단 결함을 고친 첫 정상 버전이다.** 이전 커밋(`e6e651f`)은 Task 1의 낡은 v1.9 Dockerfile을 복사해 왔기 때문에 **전 케이스 0점을 GREEN으로 위장하는 버그**를 갖고 있었다. v1.1 은 벤더링 코드를 Task 1 v2.4(라우터 OOD abstention)로 동기화, v1.2 는 val 제출용 릴리스 라벨. 상세는 §6.
 
@@ -283,7 +283,7 @@ pre-v2.0 Ds539 부피비 라우팅(GC instance F1 **0.572**)으로 조용히 퇴
 
 **수정**: `PENGWIN_TARGET_ROUTER=1` 추가 — **무료 보험**. 라우터 아티팩트는 이미 모델 tarball
 안(`./stage1_router/stage1_target_router_fold0.joblib`)에 들어 있다.
-또한 `scikit-learn==1.7.2`로 핀 고정 — 이 pickle이 정확히 그 버전으로 덤프되었고, 버전이 어긋나면
+또한 `scikit-learn==1.6.1`로 핀 고정(requirements.txt 와 일치) — 배포 tarball 의 라우터 pickle 이 이 버전으로 덤프되었고, 버전이 어긋나면
 경고와 함께 미묘하게 다른 트리를 로드하거나 아예 실패한다.
 
 ### 6.3 🟠 폴백 경로가 `None` 이라는 이름의 파일을 씀

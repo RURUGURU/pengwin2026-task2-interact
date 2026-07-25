@@ -87,13 +87,17 @@ ENV PENGWIN_ROOT=/opt/ml/model \
 # (실제 클릭 1360개 전수 검사: pelvic 680 / femur 680, family=None 0건). 따라서 이 플래그는
 # 클릭 JSON 이 없거나 파싱 불가한 퇴화 케이스를 위한 무료 보험이다 — 그 경우에만 라우터가 쓰이고,
 # 없으면 pre-v2.0 Ds539 부피비 라우팅(GC instance F1 0.572)으로 조용히 퇴화한다.
+# PENGWIN_CLICK_INJECT=0 은 배포 config(=v3.1, 2nd place)이다. 클릭 seed-injection(v3.3)은
+# watershed 강제 마커로 코어를 쪼개는 실험이었으나 val 에서 REFUTED 되었다(rank 9 vs v3.1 rank 2:
+# 쉬운 val 케이스에 spurious over-split 을 더함). 따라서 클릭은 seed 주입 없이 family 라우팅에만
+# 쓰인다(=v3.1 동작). 0 으로 유지할 것.
 ENV PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308 \
     PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
     PENGWIN_AFFINITY_DECODE=1 \
     PENGWIN_AGGLO_T=0.45 \
     PENGWIN_FUSION_DECODE=0 \
-    PENGWIN_CLICK_INJECT=1 \
+    PENGWIN_CLICK_INJECT=0 \
     PENGWIN_STAGEA_BONE_RECONCILE=0 \
     PENGWIN_TARGET_ROUTER=1 \
     PENGWIN_TARGET_ROUTER_PATH=/opt/ml/model/stage1_router/stage1_target_router_fold0.joblib
