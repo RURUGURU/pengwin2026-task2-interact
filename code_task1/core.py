@@ -2160,4 +2160,25 @@ class PengwinTrainerSTUNetBaseAffinityV308(PengwinTrainerSTUNetBaseABBCPhase1V30
         # per-epoch instance proxy + shape-check use the ABBC channels only; affinity decode is offline.
         return logits[:, :4]
 
+# --- teammate v3.5 anatomy specialists: INFERENCE ALIASES ONLY ---------------
+# 팀원 expert 는 같은 V308 체크포인트에서 encoder 를 얼리고 decoder + ABBC/affinity 헤드만
+# 1~3에폭 튜닝한 것이라 아키텍처가 V308 과 바이트 동일하다(13채널, deep supervision off).
+# nnU-Net predictor 는 build_network_architecture 를 호출할 클래스가 존재하기만 하면 되므로,
+# 아무것도 더하지 않는 서브클래스로 그들의 가중치를 로드하는 것이 충분하고 정확하다.
+#
+# 🔴 없으면 pengwin_trainers_shim 이 이름을 re-export 하지 못해 trainer discovery 가 실패하고
+#    컨테이너가 로드 단계에서 죽는다.
+class PengwinTrainerSTUNetBaseAffinityV308DeployedVal(PengwinTrainerSTUNetBaseAffinityV308):
+    """팀원의 unified V308 fallback 체크포인트 로딩용 별칭."""
 
+
+class PengwinTrainerSTUNetBaseAffinityV308SacrumExpertDeployedVal(PengwinTrainerSTUNetBaseAffinityV308):
+    """팀원의 Sacrum 전문가 로딩용 별칭."""
+
+
+class PengwinTrainerSTUNetBaseAffinityV308HipExpertDeployedVal(PengwinTrainerSTUNetBaseAffinityV308):
+    """팀원의 Left/Right Hip 공용 전문가 로딩용 별칭."""
+
+
+class PengwinTrainerSTUNetBaseAffinityV308FemurExpertDeployedVal(PengwinTrainerSTUNetBaseAffinityV308):
+    """팀원의 Femur 전문가 로딩용 별칭."""

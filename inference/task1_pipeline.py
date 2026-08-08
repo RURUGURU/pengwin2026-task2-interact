@@ -97,6 +97,20 @@ DS539_OUTPUT_CHANNELS = 5  # background, Sacrum, LeftHip, RightHip, Femur
 #     model input channel — that is legitimate cascade routing, not leakage).
 DS538_DATASET = "Dataset538_PelvicFemurBICMFragmentV5"
 DS538_TRAINER = os.environ.get("PENGWIN_DS538_TRAINER", "PengwinTrainerSTUNetBaseABBCPhase1V302")
+# [v3.4 always-expert] 부위별 Stage-B 전문가. **기본값이 비어 있어 끄면 이전과 바이트 동일**이다
+# (comprehension 이 trainer.strip() 으로 걸러서, 아무것도 안 주면 {} 가 되고 아래 .get() 이
+#  단일 DS538_TRAINER 로 퇴화한다). 전문가는 같은 V308 체크포인트에서 encoder 를 얼리고
+#  decoder+헤드만 1~3에폭 튜닝한 것이라 아키텍처가 동일해 일반 로더가 그대로 받는다.
+DS538_EXPERT_TRAINERS = {
+    anatomy: trainer
+    for anatomy, trainer in {
+        "Sacrum": os.environ.get("PENGWIN_DS538_TRAINER_SACRUM", ""),
+        "LeftHip": os.environ.get("PENGWIN_DS538_TRAINER_HIP", ""),
+        "RightHip": os.environ.get("PENGWIN_DS538_TRAINER_HIP", ""),
+        "Femur": os.environ.get("PENGWIN_DS538_TRAINER_FEMUR", ""),
+    }.items()
+    if trainer.strip()
+}
 DS538_PLANS = "nnUNetResEncUNetLPlans"
 DS538_CONFIG = "3d_fullres"
 DS538_FOLD = os.environ.get("PENGWIN_DS538_FOLD", "0")  # int-string or "all" (fold_all); default "0" = v1.5
@@ -1399,9 +1413,12 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         torch.cuda.empty_cache()
 
     # === Layer 4: anatomy 별 Ds538 추론 → ABBC decode → 전체 라벨에 paste ===
-    ds538_predictor = build_predictor(
-        DS538_DATASET, DS538_TRAINER, DS538_PLANS, DS538_CONFIG, DS538_FOLD,
-    )
+    # [v3.4 always-expert] 지연 생성 — 라우팅된 부위가 자기 전문가를 요청할 수 있게.
+    # expert env 가 비어 있으면 첫 부위에서 DS538_TRAINER 로 한 번 만들고 나머지가 재사용하므로
+    # 이전 판의 "루프 전 1회 생성"과 동작이 같다. 다만 모델 로드 시각이 시간예산 검사 **뒤**로
+    # 옮겨져, 첫 부위의 480초 예산에서 로드 시간이 빠진다.
+    ds538_predictor = None
+    active_ds538_trainer = None
 
     full_label = np.zeros(img_shape, dtype=np.uint16)
     for anatomy in anatomies:
@@ -1465,6 +1482,23 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
         # Stage-A anatomy probability into Stage-B. The bbox above still uses the Ds539 prob for
         # localization (cascade routing), but the model input is now pure CT.
         ct_lut_crop = ct_lut_full[bbox]
+        # [v3.4 always-expert] 이 부위가 요구하는 Stage-B 가중치로 교체.
+        # 🔴 **한 번에 하나만 상주시킨다.** 부위는 순차 처리되므로 334MB 짜리 전문가 셋을 동시에
+        #    들고 있어 봐야 얻는 것이 없고, v3.1~v3.3 의 메모리 작업을 되돌리게 된다
+        #    (GC 메모리 한도는 올릴 수 없고, Task 1 v3.5 가 Final Test 에서 그것 때문에 죽었다).
+        desired_ds538_trainer = DS538_EXPERT_TRAINERS.get(anatomy, DS538_TRAINER)
+        if desired_ds538_trainer != active_ds538_trainer:
+            if ds538_predictor is not None:
+                del ds538_predictor
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            ds538_predictor = build_predictor(
+                DS538_DATASET, desired_ds538_trainer, DS538_PLANS, DS538_CONFIG, DS538_FOLD,
+            )
+            active_ds538_trainer = desired_ds538_trainer
+            log(f"[{anatomy}] Stage-B trainer -> {desired_ds538_trainer}")
+
         ds538_image_4d = ct_lut_crop[None]  # (1, Z, Y, X)
         ds538_props = {"spacing": list(spacing_zyx)}
 

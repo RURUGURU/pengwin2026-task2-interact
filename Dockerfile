@@ -91,15 +91,39 @@ ENV PENGWIN_ROOT=/opt/ml/model \
 # watershed 강제 마커로 코어를 쪼개는 실험이었으나 val 에서 REFUTED 되었다(rank 9 vs v3.1 rank 2:
 # 쉬운 val 케이스에 spurious over-split 을 더함). 따라서 클릭은 seed 주입 없이 family 라우팅에만
 # 쓰인다(=v3.1 동작). 0 으로 유지할 것.
-ENV PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308 \
+# [v3.4 = v3.1 배포 경로 + always-expert Stage-B + T=0.75]
+#
+# Task 2 출력은 Task 1 출력과 사실상 동일하다 (2026-08-08 보드 실측: dice 0.886/0.886,
+# local dice 0.873/0.873, HD95 11.214/11.215). 클릭을 seed 로 안 쓰기 때문이다
+# (PENGWIN_CLICK_INJECT=0 유지 — v3.3 의 seed 주입은 val 에서 over-split 으로 기각됐다).
+# 따라서 **Task 1 의 Stage-B 개선이 Task 2 로 그대로 상속된다.**
+#
+# 같은 팀 계정이 Task 1 Final Test 에서 always-expert + T=0.75 로 MP 14.6 을 냈고
+# 우리 unified + 0.45 구성은 17.6 이었다. 그 구성을 Task 2 보드 사다리에 얹어 계산하면:
+#     Split      0.150(16위) -> 0.063(4위)    +12계단
+#     Topology   0.746(15위) -> 0.819(6위)    +9계단
+#     Mean Position 9.5 -> 8.6   (Δ -0.9)
+# 나머지 8지표는 1~6계단씩 내려간다(F1 이 -6계단으로 가장 큼). 순이득이라 채택한다.
+#
+# ⚠️ model.tar.gz 는 반드시 팀원 번들이어야 한다 —
+#    sha256 049c38ea4abf1629a4d5f79a68a27918fd4103941fbf4f500b76211e93192919.
+#    expert 체크포인트가 없는 번들로는 로드에 실패한다.
+ENV PENGWIN_DS539_TRAINER=PengwinTrainerSTUNetBaseAnatomyV301 \
+    PENGWIN_DS539_FOLD=0 \
+    PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308DeployedVal \
+    PENGWIN_DS538_TRAINER_SACRUM=PengwinTrainerSTUNetBaseAffinityV308SacrumExpertDeployedVal \
+    PENGWIN_DS538_TRAINER_HIP=PengwinTrainerSTUNetBaseAffinityV308HipExpertDeployedVal \
+    PENGWIN_DS538_TRAINER_FEMUR=PengwinTrainerSTUNetBaseAffinityV308FemurExpertDeployedVal \
     PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
     PENGWIN_AFFINITY_DECODE=1 \
-    PENGWIN_AGGLO_T=0.45 \
+    PENGWIN_AGGLO_T=0.75 \
     PENGWIN_FUSION_DECODE=0 \
     PENGWIN_CLICK_INJECT=0 \
     PENGWIN_STAGEA_BONE_RECONCILE=0 \
+    PENGWIN_ROUTE_CC_MODE=largest \
     PENGWIN_TARGET_ROUTER=1 \
+    PENGWIN_RF_CONF_MARGIN=0.15 \
     PENGWIN_TARGET_ROUTER_PATH=/opt/ml/model/stage1_router/stage1_target_router_fold0.joblib
 
 # Grand Challenge security policy: container must not run as root.
