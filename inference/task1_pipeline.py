@@ -1602,7 +1602,42 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                 )
                 if _split_seeds:
                     _n0 = len(set(int(v) for v in np.unique(decoded_pp)) - {0})
-                    decoded_pp = apply_click_split(decoded_pp, _split_seeds)
+                    # [2026-08-09] 절단면을 **학습된 affinity 능선**에 맞추는 경로 (env 로만 켜진다).
+                    # 왜: 기본 apply_click_split 은 watershed 지형이 distance_transform 이라 물이 두
+                    # 클릭의 거리 중간에서 만난다 — 실제 골절면과 무관하다. 로컬 GT 오라클 실측
+                    # (30케이스·후보 52건, 정답 쪼개야함 19/안됨 33):
+                    #     무게이트                 정확도 37%  <- 과거 split +0.906(14배)의 정체
+                    #     거리중선+자식>=1000mm³   52%  (자식크기↔실제GT부피 상관 r=0.548)
+                    #     CT 뼈강도 절단           실패 (r=0.022, 채택 0건)
+                    #     오라클(실제 GT 부피)     92%  (채택15 옳음15 틀림0)
+                    # 클릭은 GT 조각당 정확히 1개(실측 144/144)이고, evaluator 는 지표 전에 GT·예측
+                    # 양쪽에서 CC 1000mm³ 미만을 제거한다(evaluate.py:178,228) — 클릭된 조각의 30%가
+                    # 그 미만이다. 즉 "둘 다 채점되는 조각인가"가 정답이고 그것은 **조각 크기**로
+                    # 정해진다. 절단면이 골절면을 따라가면 자식 크기 ≈ 실제 조각 크기가 되어
+                    # evaluator 자신의 1000mm³ 를 그대로 게이트로 쓸 수 있다.
+                    # 쓰는 신호: Stage-B 가 학습한 affinity 9채널 중 배포 decode 가 버리는 것들
+                    # (agglo_decode.py:111 은 short_idx=(0,1,2) 만 읽는다; 6,7,8 은 loss.py 원문
+                    # "the merge-breaking lever").
+                    _aff_mode = os.environ.get("PENGWIN_CLICK_SPLIT_AFFINITY", "0")
+                    _did_aff = False
+                    if _aff_mode != "0":
+                        try:
+                            from click_split_affinity import (apply_click_split_affinity,
+                                                              min_vox_for_mm3)
+                            _mv = 0
+                            if _aff_mode == "gated":
+                                _mv = min_vox_for_mm3(
+                                    ds538_predictor.configuration_manager.spacing,
+                                    float(os.environ.get("PENGWIN_CLICK_SPLIT_MIN_MM3", "1000")))
+                            decoded_pp, _st = apply_click_split_affinity(
+                                decoded_pp, _split_seeds, _aff, min_vox=_mv,
+                                use_long=os.environ.get("PENGWIN_CLICK_SPLIT_LONG", "1") == "1")
+                            _did_aff = True
+                            log(f"[click-split-aff:{anatomy}] mode={_aff_mode} min_vox={_mv} {_st}")
+                        except Exception as _e:   # 실패하면 기존 경로로 떨어진다 — 절대 죽지 않는다
+                            log(f"[click-split-aff:{anatomy}] 실패 ({_e}) -> 거리중선 경로")
+                    if not _did_aff:
+                        decoded_pp = apply_click_split(decoded_pp, _split_seeds)
                     _n1 = len(set(int(v) for v in np.unique(decoded_pp)) - {0})
                     log(f"[click-inject:{anatomy}] {len(_split_seeds)} click-seeds, instances {_n0}->{_n1}")
             except Exception as _e:  # never let click injection crash the pipeline

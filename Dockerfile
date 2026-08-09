@@ -108,6 +108,21 @@ ENV PENGWIN_ROOT=/opt/ml/model \
 # ⚠️ model.tar.gz 는 반드시 팀원 번들이어야 한다 —
 #    sha256 049c38ea4abf1629a4d5f79a68a27918fd4103941fbf4f500b76211e93192919.
 #    expert 체크포인트가 없는 번들로는 로드에 실패한다.
+# ── v3.5 (2026-08-09): 2x2 의 빈 칸 ─────────────────────────────────────────────────────
+# 우리는 두 변수를 **동시에** 바꿔놓고 "expert 가 좋다"고 결론냈다. 실제로 시험한 것은 대각선뿐이다:
+#                     T=0.45 + femur 0.15      T=0.75 (femur override 없음)
+#   expert OFF             v3.6 = 18.6                (미시험)
+#   expert ON              **이 파일 = v3.5**          v3.4/v3.11 = 9.5 / 15.6
+#
+# GC 케이스별 실측이 두 변경의 방향이 **반대**임을 보여준다 (Task1 지표별 순위, v3.6 -> v3.11):
+#     topology 16 -> 1  ✅   split 33 -> 5  ✅   dice 19 -> 23 🔴   assd 20 -> 23 🔴
+# expert 는 topology 를 사고, T=0.75 는 split 을 사면서 경계(dice/assd)를 판다.
+# 빈 칸은 **topology 는 지키고 경계는 되찾는** 조합이다. 조사 추정 MP 9.5 -> 7.0 (-2.6).
+# 회귀가 T 때문이면 그만큼 벌고, 트레이너 때문이면 0이다 — **어느 쪽이든 답을 얻는다.**
+#
+# 판정: 로컬 54케이스 게이트는 GC 와 부호 일치율 25%로 신뢰할 수 없어 트립와이어로 강등했다.
+#       이 후보의 판정은 **GC Final Test** 로 한다 (하루 2회 · GPU 0 · SNR 1529:1).
+# 가중치는 v3.4 와 동일하다 — 기존 업로드 모델을 재사용한다.
 ENV PENGWIN_DS539_TRAINER=PengwinTrainerSTUNetBaseAnatomyV301 \
     PENGWIN_DS539_FOLD=0 \
     PENGWIN_DS538_TRAINER=PengwinTrainerSTUNetBaseAffinityV308DeployedVal \
@@ -117,7 +132,8 @@ ENV PENGWIN_DS539_TRAINER=PengwinTrainerSTUNetBaseAnatomyV301 \
     PENGWIN_DS538_FOLD=0 \
     PENGWIN_DS538_OUT_CH=13 \
     PENGWIN_AFFINITY_DECODE=1 \
-    PENGWIN_AGGLO_T=0.75 \
+    PENGWIN_AGGLO_T=0.45 \
+    PENGWIN_AGGLO_T_FEMUR=0.15 \
     PENGWIN_FUSION_DECODE=0 \
     PENGWIN_CLICK_INJECT=0 \
     PENGWIN_STAGEA_BONE_RECONCILE=0 \
