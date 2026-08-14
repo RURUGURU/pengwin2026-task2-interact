@@ -1520,8 +1520,18 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                 if _p not in _sys.path:
                     _sys.path.insert(0, _p)
             from agglo_decode import decode_affinity_agglo, decode_fusion
+            # affinity 가 시작하는 채널을 env 로 준다. **기본 4 = 종전(V308 13채널) 동작 불변.**
+            #   V308 = 13채널 (0-3 ABBC · 4-12 affinity)              -> AFF_START=4
+            #   V5   = 14채널 (0-3 ABBC · 4 골절면 · 5-13 affinity)    -> AFF_START=5
+            # 안 맞추면 골절면을 affinity[0] 으로 오인해 9방향이 한 칸씩 밀린다 — 조용히 틀린다.
+            _aff0 = int(os.environ.get("PENGWIN_DS538_AFF_START", "4"))
             _abbc = softmax_axis0(ds538_logits_pp[:4])
-            _aff = 1.0 / (1.0 + np.exp(-np.asarray(ds538_logits_pp[4:], dtype=np.float32)))
+            _aff = 1.0 / (1.0 + np.exp(-np.asarray(ds538_logits_pp[_aff0:], dtype=np.float32)))
+            # V5 는 골절면을 **채널 4에 지도학습**한다. 클릭 절단면의 지형으로 쓴다(추론이 아니라
+            # 정답을 보고 배운 신호). 13채널 모델이면 None 이라 종전 경로 그대로다.
+            _frac = None
+            if _aff0 >= 5:
+                _frac = 1.0 / (1.0 + np.exp(-np.asarray(ds538_logits_pp[4], dtype=np.float32)))
             # [13ch raw dump] 4 ABBC softmax + 9 affinity sigmoid -> enables OFFLINE decode/fusion
             # T-sweeps on CPU (no GPU re-run). Split offline as probs13[:4]/probs13[4:].
             _dump_dir = os.environ.get("PENGWIN_DUMP_PROBS", "")
@@ -1629,8 +1639,12 @@ def run_per_anatomy(image_path: Path, ref_img: sitk.Image,
                                 _mv = min_vox_for_mm3(
                                     ds538_predictor.configuration_manager.spacing,
                                     float(os.environ.get("PENGWIN_CLICK_SPLIT_MIN_MM3", "1000")))
+                            # 골절면 채널(_frac)이 있으면 능선 지도에 합성한다 —
+                            # 게이트 정확도 현재 73% / 오라클 92% 의 격차를 겨냥한 레버다.
+                            _use_frac = os.environ.get("PENGWIN_CLICK_SPLIT_FRAC", "1") != "0"
                             decoded_pp, _st = apply_click_split_affinity(
                                 decoded_pp, _split_seeds, _aff, min_vox=_mv,
+                                frac=(_frac if _use_frac else None),
                                 use_long=os.environ.get("PENGWIN_CLICK_SPLIT_LONG", "1") == "1")
                             _did_aff = True
                             log(f"[click-split-aff:{anatomy}] mode={_aff_mode} min_vox={_mv} {_st}")

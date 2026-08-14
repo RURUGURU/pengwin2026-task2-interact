@@ -61,23 +61,49 @@ SHORT = (0, 1, 2)
 LONG = (6, 7, 8)
 
 
-def separation_map(aff: np.ndarray, use_long: bool = True) -> np.ndarray:
-    """골절면 지도. 높을수록 '여기가 조각 경계'라는 주장."""
+def separation_map(aff: np.ndarray, use_long: bool = True,
+                   frac: np.ndarray | None = None) -> np.ndarray:
+    """골절면 지도. 높을수록 '여기가 조각 경계'라는 주장.
+
+    두 가지 출처가 있다:
+
+    (a) **affinity 에서 추론** (기본 · V308 13채널)
+        `1 - min(affinity)` 는 "이웃과 안 붙어 있다" 는 뜻이므로 골절면의 **간접 증거**다.
+        short(최근접)와 long(offset 9)을 함께 봐서 둘 중 하나라도 분리를 주장하면 능선으로 친다.
+
+    (b) **골절면 채널을 직접** (V5 14채널 · `frac` 인자)
+        V5 Stage-B 는 골절면을 **별도 채널로 지도학습**한다(채널 4). 추론이 아니라 정답을
+        보고 배운 신호다. 있으면 이걸 쓴다.
+
+    왜 (b) 가 나을 수 있나: 이 절단면의 품질이 곧 자식 조각 크기의 정확도이고, 그게
+    1000mm³ 게이트의 정확도를 정한다. 로컬 GT 오라클 실측으로 현재 (a) 는 **73%**,
+    오라클은 **92%** 다 — 그 격차가 "절단면이 실제 골절면을 얼마나 따라가는가" 다.
+
+    ⚠️ (b) 를 단독으로 쓰지 않고 **최대값으로 합친다.** 골절면 채널은 얇은 띠라 클릭 사이를
+       가로지르지 못하는 구간이 생길 수 있는데, 그러면 watershed 가 엉뚱한 곳에서 만난다.
+       affinity 능선이 그 구멍을 메운다. 둘 다 "여기가 경계" 라고 주장하는 쪽을 취한다.
+    """
     a = np.asarray(aff, dtype=np.float32)
     sep = 1.0 - a[list(SHORT)].min(axis=0)
     if use_long and a.shape[0] >= 9:
         sep = np.maximum(sep, 1.0 - a[list(LONG)].min(axis=0))
+    if frac is not None:
+        f = np.asarray(frac, dtype=np.float32)
+        if f.shape == sep.shape:
+            sep = np.maximum(sep, f)
     return sep
 
 
 def apply_click_split_affinity(labels, seeds_pp, aff, *, min_vox: int = 0, radius: int = 1,
                                use_long: bool = True, band: tuple[int, int] | None = None,
-                               log=None):
+                               frac: np.ndarray | None = None, log=None):
     """클릭 2개 이상인 인스턴스를 **affinity 능선**을 따라 쪼갠다.
 
     labels   : 부위별 지역 인스턴스 맵 (pp 격자)
     seeds_pp : [(z,y,x), ...] pp 격자 클릭 좌표
     aff      : (9, Z, Y, X) sigmoid affinity — labels 와 같은 격자
+    frac     : (Z, Y, X) 골절면 확률. V5 Stage-B(14채널)의 채널 4. 주면 능선 지도를
+               **지도학습된 골절면과 최대값 합성**한다. None 이면 종전과 동일(affinity 만)
     min_vox  : 자식이 이 복셀 수 미만이면 그 분할을 **되돌린다**. evaluator 의 1000mm³ 를
                pp 격자 복셀 부피로 환산해 넘긴다. 0 이면 게이트 없음(대조군).
     band     : (lo, hi) 를 주면 새 라벨을 그 범위 안에서만 할당한다.
@@ -93,7 +119,7 @@ def apply_click_split_affinity(labels, seeds_pp, aff, *, min_vox: int = 0, radiu
     if a.ndim != 4 or a.shape[1:] != out.shape:
         return out.astype(np.uint16, copy=False), {"skipped": f"aff 형상 불일치 {a.shape}"}
 
-    sep = separation_map(a, use_long=use_long)
+    sep = separation_map(a, use_long=use_long, frac=frac)
     by_inst: dict[int, list] = defaultdict(list)
     for (z, y, x) in seeds_pp:
         if 0 <= z < Z and 0 <= y < Y and 0 <= x < X:
