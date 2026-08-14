@@ -27,17 +27,30 @@ def _weight_boundary(graph, src, dst, n):
 def _merge_boundary(graph, src, dst):
     pass
 
-def decode_agglo(probs, T=0.45, min_vox=250, seed_core=0.5, seed_bnd=0.20, min_frac=None):
+def decode_agglo(probs, T=0.45, min_vox=250, seed_core=0.5, seed_bnd=0.20, min_frac=None,
+                 seed_mode=None):
     """probs: float array [4,Z,Y,X]. Returns int instance map (0=bg).
     min_frac (env PENGWIN_AGGLO_MINFRAC, default 0): reabsorb any fragment smaller than
-    min_frac x the largest fragment -> kills phantom/sliver over-splits (precision guard)."""
+    min_frac x the largest fragment -> kills phantom/sliver over-splits (precision guard).
+    seed_mode (v3.13): "ridge" seeds at the affinity-separation ridge instead of strong-core
+    interiors. Default None -> env PENGWIN_AGGLO_SEED -> "core" = **identical to v3.12**."""
     bg, border, boundary, core = probs[0], probs[1], probs[2], probs[3]
     fg = bg < 0.5
     if fg.sum() == 0:
         return np.zeros(fg.shape, np.int32)
     elev = boundary.astype(np.float32)  # high = fracture-surface ridge
     # oversegment: seed at strong-core / low-boundary interiors, watershed the boundary ridges
-    seeds = (core > seed_core) & (boundary < seed_bnd) & fg
+    # [v3.13] seed 규칙. 기본값은 v3.12 와 **완전히 동일**하다 (env 미설정 시 "core").
+    #   왜 능선 seed 라는 선택지가 필요한가: decode 출력 인스턴스 수 == seed 연결성분 수다
+    #   (agglomeration 은 병합만 하므로 seed 가 상한이다). 대퇴골에서는 병합 임계 T 를 바꿔도
+    #   전 지표가 소수점 4자리까지 ±0.0000 이다 — 즉 seed 가 천장이고 T 축은 닫혀 있다.
+    _seed_mode = seed_mode or os.environ.get("PENGWIN_AGGLO_SEED", "core")
+    if _seed_mode == "ridge":
+        _rt = float(os.environ.get("PENGWIN_AGGLO_SEED_RIDGE_T", "0.20"))
+        # boundary 자리에는 호출부(decode_affinity_agglo)가 affinity 분리 능선 sep 을 넣어 둔다
+        seeds = (boundary < _rt) & fg
+    else:
+        seeds = (core > seed_core) & (boundary < seed_bnd) & fg
     markers, nm = ndi.label(seeds)
     if nm <= 1:  # fallback: seed at boundary-distance maxima
         d = ndi.distance_transform_edt(boundary < seed_bnd) * fg
@@ -108,7 +121,8 @@ def _drop_small(lab, min_vox):
     lab2, _ = _relabel(keep)
     return lab2
 
-def decode_affinity_agglo(abbc_probs, affinities, T=0.45, min_vox=250, short_idx=(0, 1, 2)):
+def decode_affinity_agglo(abbc_probs, affinities, T=0.45, min_vox=250, short_idx=(0, 1, 2),
+                          anatomy=None):
     """[TIER-1] Decode V307's 13ch output into instances by average-linkage agglomeration on the
     LEARNED affinities (vs the noisy ABBC boundary channel that Tier-0 used).
       abbc_probs : [4,Z,Y,X] softmax (bg,border,boundary,core)
@@ -120,7 +134,16 @@ def decode_affinity_agglo(abbc_probs, affinities, T=0.45, min_vox=250, short_idx
     sep = 1.0 - short.min(axis=0)                 # [Z,Y,X], high = fracture surface
     probs_aff = np.asarray(abbc_probs, dtype=np.float32).copy()
     probs_aff[2] = sep.astype(np.float32)         # replace ABBC boundary with the affinity separation
-    return decode_agglo(probs_aff, T=T, min_vox=min_vox)
+    # [v3.13] seed 규칙을 **부위별로** 고른다. 기본은 전 부위 core seed = v3.12 동작 그대로.
+    #   왜 대퇴골만인가 (54케 층화 실측): 능선 seed 는 femur 에 이득(hd95 −2.11mm)이고
+    #   pelvic 에 손해(dice −0.0124)라 전 부위에 걸면 전역 평균에서 상쇄되고 pelvic 이 나빠진다.
+    #   그리고 GC Final 160케 중 dice 최악 15케이스가 **전부 femur-only** 다.
+    _sm = None
+    if anatomy in ("Femur", "LeftFemur", "RightFemur"):
+        _sm = os.environ.get("PENGWIN_AGGLO_SEED_FEMUR") or None
+    if _sm is None:
+        _sm = os.environ.get("PENGWIN_AGGLO_SEED") or None
+    return decode_agglo(probs_aff, T=T, min_vox=min_vox, seed_mode=_sm)
 
 
 def _affinity_subsplit(m, sep, core, T, seed_core, seed_bnd, min_vox):
