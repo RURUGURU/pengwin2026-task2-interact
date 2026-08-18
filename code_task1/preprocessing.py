@@ -610,7 +610,7 @@ def build_bicm_v5_dataset(ds_id: int,
                 # leak-free target: the per-anatomy fragment instance map itself, relabeled to
                 # contiguous 1..K (bg=0). No ABBC-semantic conversion, no sidecar — the custom loss
                 # reads this label directly. Anatomy identity is carried by the ROI (sample_id), not
-                # by an input channel. See docs/Plan.md Phase 0 / [[pengwin-instance-label-nosidecar]].
+                # by an input channel. 현재 계약은 instance label을 sidecar 없이 직접 사용한다.
                 uniq = [int(v) for v in np.unique(inst_roi) if v != 0]
                 if not uniq:
                     continue  # this anatomy has no fragment in the ROI -> skip

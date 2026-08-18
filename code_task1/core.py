@@ -2131,7 +2131,7 @@ class PengwinTrainerSTUNetBaseAffinityV308(PengwinTrainerSTUNetBaseABBCPhase1V30
     Deep-research (GASP CVPR'22): mutex-watershed is GASP-AbsMax = least noise-robust (= why V303 over-split);
     average-linkage agglomeration on a LEARNED affinity is the fix. (Loss-level X-CAC = within-noise; decode
     tweaks fuzzy = over-split; V307's UNBALANCED affinity BCE collapsed to affinity~1 everywhere because ~95%
-    of pairs are same-instance — all RETIRED, see docs/Experiments.md + [[pengwin-affinity-agglo-direction]].)
+    of pairs are same-instance. Those rejected branches are not part of this archive.)
 
     IDENTICAL to V302 EXCEPT: (1) head 4 -> 4+K channels (4 ABBC mask/Dice + K affinity offsets);
     (2) loss = LeakFreeInstanceABBCAffinityLoss = ABBC + CLASS-BALANCED per-offset same-instance BCE

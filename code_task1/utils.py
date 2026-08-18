@@ -35,8 +35,8 @@ from skimage.segmentation import watershed
 # Internally the model and loss only ever need ``(anatomy_group, local_id)``; the
 # global ID is purely an *I/O encoding* at the evaluation boundary (the PENGWIN
 # ``.mha`` submission format requires global IDs). All instance-ID arithmetic in
-# ``loss.py`` / ``eval.py`` / ``core.py`` / ``preprocessing.py`` / ``utils.py`` /
-# ``visualize.py`` derives from these definitions so that:
+# ``loss.py`` / ``eval.py`` / ``core.py`` / ``preprocessing.py`` / ``utils.py``가
+# 모두 이 정의를 사용하므로:
 #
 #   * adding an anatomy (or changing a range) is a one-row edit here, and
 #   * "did we cover every anatomy?" is answerable by inspection rather than by

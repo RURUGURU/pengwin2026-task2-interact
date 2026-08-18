@@ -38,9 +38,6 @@ def _nnunet_train_bin() -> str:
     found = shutil.which("nnUNetv2_train")
     if found:
         return found
-    legacy = "/root/miniconda3/envs/pengwin_v2/bin/nnUNetv2_train"
-    if Path(legacy).exists():
-        return legacy
     raise FileNotFoundError(
         "nnUNetv2_train not found. Install nnunetv2 or set PENGWIN_NNUNET_TRAIN_BIN."
     )
@@ -438,9 +435,8 @@ def _resolve_training_profiles(trainer: str,
     # The active STU-Net trainers resolve their loss profile inside the
     # trainer class (core._build_loss); the live launcher is the
     # `stunet-finetune` subcommand / run_stunet_finetune() in this module
-    # (formerly run_finetuning_stunet.py). Every legacy per-trainer branch
-    # (252 dead versions) was removed — explicit user choices pass through,
-    # else generic defaults below.
+    # 과거 trainer별 252개 분기는 제거했다. 명시한 사용자 값은 그대로 전달하고,
+    # 값이 없을 때만 아래 공통 기본값을 쓴다.
     return (
         loss_profile or "dc_ce",
         ce_class_weights or "off",

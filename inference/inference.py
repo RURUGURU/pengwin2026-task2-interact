@@ -80,18 +80,9 @@ DEFAULT_OUTPUT_DIR = os.environ.get(
     "PENGWIN_OUTPUT_DIR", "/output/images/pelvic-fracture-segmentation"
 )
 
-# 출력 slug 후보 (2026-07-21 추가).
-#
-# 문제: Task 2 의 출력 인터페이스 slug 가 문서상 확정되지 않았다. docs/challenge/02-*.md:12 은
-# "pelvic-fracture-segmentation" 이라 적고 있으나, **같은 스타일의 문서 줄이 Task 1 에서는 틀린 전례가
-# 있다** — 01-*.md:9 은 "peripelvic-fracture-segmentation" 이라 하지만 실제 GC 채점된 배포 컨테이너는
-# "peripelvic-fracture-ct-segmentation" 을 쓴다(01-*.md:83 과 일치). PENGWIN-2024 공식 템플릿도
-# 입력 pelvic-fracture-ct ↔ 출력 pelvic-fracture-**ct**-segmentation 로 짝지어져 있다.
-# slug 가 틀리면 GC 는 산출물을 임포트하지 못하고 해당 런은 실패 처리된다.
-#
-# 대응: (1) /input/inputs.json 이 있으면 그것이 런타임 권위 소스이므로 거기서 읽는다.
-#       (2) 없으면 후보 slug 전부에 동일한 .mha 를 쓴다. GC 는 **선언된 소켓만** 임포트하고 나머지
-#           디렉터리는 무시하므로 부작용이 없다(디스크 수십 MB 뿐).
+# `/input/inputs.json`의 runtime socket 정의를 우선한다. 파일이 없는 로컬 실행에서는 과거 GC
+# interface 이름 차이 때문에 결과를 잃지 않도록 확인된 후보에 같은 MHA를 쓴다. 이는 segmentation
+# 값을 바꾸지 않고 output discovery만 보수적으로 처리한다.
 OUTPUT_SLUG_CANDIDATES = (
     "pelvic-fracture-segmentation",
     "pelvic-fracture-ct-segmentation",

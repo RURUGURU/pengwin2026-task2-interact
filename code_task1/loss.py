@@ -573,8 +573,8 @@ class LeakFreeInstanceABBCLoss(nn.Module):
     SUPERSEDES the retired InstanceConnectivityABBCLoss: the loss-level merge/split topology penalty was
     mis-scaled (~25x the base — raw conn ~8.5 vs base ~0.32 at boost=8) and collapsed training the
     instant it ramped in. Under the real decoder the plain ABBC head reaches held-out instance-F1 ~0.85,
-    so the connectivity term was both unstable AND unnecessary. docs/Plan.md Phase 1 ·
-    [[pengwin-instance-label-nosidecar]]. Env: PENGWIN_ABBC_BOUNDARY_WEIGHT (default 5.0).
+    so the connectivity term was both unstable AND unnecessary. Instance labels are consumed
+    directly without a sidecar. Env: PENGWIN_ABBC_BOUNDARY_WEIGHT (default 5.0).
     """
 
     NUM_CLASSES = 4

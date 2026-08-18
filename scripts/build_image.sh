@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the PENGWIN 2026 **Task 2 (PENGWIN-Interact)** container image.
+# Build the preserved PENGWIN 2026 Task 2 v3.7 container image.
 #
 # Build context is the repository root (one level up from scripts/) so the
 # Dockerfile can COPY both inference/ (Task 2 entrypoint + vendored Task 1
