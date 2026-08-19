@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="560" viewBox="0 0 1600 560" role="img" aria-labelledby="title desc">
+  <title id="title">PENGWIN Task 2 click-aware inference pipeline</title>
+  <desc id="desc">CT and click JSON are parsed, routed to anatomy, processed by V301 and V308, and split with learned affinity under a volume guard.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#93c5fd"/>
+    </marker>
+    <style>
+      .title{font-family:Inter,Arial,sans-serif;font-size:34px;font-weight:700;fill:#f8fafc}
+      .sub{font-family:Inter,Arial,sans-serif;font-size:19px;font-weight:500;fill:#cbd5e1}
+      .h{font-family:Inter,Arial,sans-serif;font-size:22px;font-weight:700;fill:#f8fafc}
+      .t{font-family:Inter,Arial,sans-serif;font-size:17px;font-weight:500;fill:#e2e8f0}
+      .tag{font-family:Inter,Arial,sans-serif;font-size:16px;font-weight:700;fill:#0f172a}
+      .box{rx:18;stroke-width:2}
+      .arrow{stroke:#93c5fd;stroke-width:5;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="560" rx="26" fill="url(#bg)"/>
+  <text x="70" y="68" class="title">Task 2 · Click-aware fracture instance segmentation</text>
+  <text x="70" y="103" class="sub">Clicks determine anatomy routing and split co-located fracture fragments.</text>
+
+  <rect x="70" y="165" width="220" height="225" class="box" fill="#1e293b" stroke="#64748b"/>
+  <text x="180" y="215" class="h" text-anchor="middle">Input</text>
+  <text x="180" y="260" class="t" text-anchor="middle">CT volume (.mha)</text>
+  <text x="180" y="296" class="t" text-anchor="middle">click JSON</text>
+  <circle cx="143" cy="333" r="10" fill="#f97316"/>
+  <circle cx="180" cy="346" r="10" fill="#22c55e"/>
+  <circle cx="217" cy="326" r="10" fill="#eab308"/>
+
+  <path d="M290 278 L350 278" class="arrow"/>
+  <rect x="360" y="165" width="250" height="225" class="box" fill="#1d4ed8" stroke="#60a5fa"/>
+  <text x="485" y="215" class="h" text-anchor="middle">Click parser</text>
+  <text x="485" y="256" class="t" text-anchor="middle">coordinate validation</text>
+  <text x="485" y="290" class="t" text-anchor="middle">Pelvic / Femur routing</text>
+  <text x="485" y="324" class="t" text-anchor="middle">anatomy-specific seeds</text>
+  <rect x="414" y="345" width="142" height="29" rx="14" fill="#bfdbfe"/>
+  <text x="485" y="366" class="tag" text-anchor="middle">routing guard</text>
+
+  <path d="M610 278 L670 278" class="arrow"/>
+  <rect x="680" y="165" width="250" height="225" class="box" fill="#0f766e" stroke="#5eead4"/>
+  <text x="805" y="215" class="h" text-anchor="middle">2-stage cascade</text>
+  <text x="805" y="256" class="t" text-anchor="middle">V301 · 5-class anatomy</text>
+  <text x="805" y="290" class="t" text-anchor="middle">V308 · expert model</text>
+  <text x="805" y="324" class="t" text-anchor="middle">4 ABBC + 9 affinity</text>
+  <rect x="741" y="345" width="128" height="29" rx="14" fill="#99f6e4"/>
+  <text x="805" y="366" class="tag" text-anchor="middle">13 channels</text>
+
+  <path d="M930 278 L990 278" class="arrow"/>
+  <rect x="1000" y="165" width="270" height="225" class="box" fill="#7c3aed" stroke="#c4b5fd"/>
+  <text x="1135" y="215" class="h" text-anchor="middle">Affinity split</text>
+  <text x="1135" y="256" class="t" text-anchor="middle">short + long evidence</text>
+  <text x="1135" y="290" class="t" text-anchor="middle">fracture ridge watershed</text>
+  <text x="1135" y="324" class="t" text-anchor="middle">both children ≥ 300 mm³</text>
+  <rect x="1072" y="345" width="126" height="29" rx="14" fill="#ddd6fe"/>
+  <text x="1135" y="366" class="tag" text-anchor="middle">fail closed</text>
+
+  <path d="M1270 278 L1330 278" class="arrow"/>
+  <rect x="1340" y="165" width="190" height="225" class="box" fill="#be123c" stroke="#fda4af"/>
+  <text x="1435" y="215" class="h" text-anchor="middle">Output</text>
+  <text x="1435" y="258" class="t" text-anchor="middle">instance mask</text>
+  <text x="1435" y="292" class="t" text-anchor="middle">original geometry</text>
+  <text x="1435" y="326" class="t" text-anchor="middle">preserved ID bands</text>
+
+  <text x="70" y="466" class="sub">Final archive contract · click inject ON · T=0.75 · Femur adaptive retry · T4 16 GB / 10 min constraint</text>
+  <text x="70" y="506" class="sub">Metrics and provenance: README · release manifest · GET-only GC snapshot</text>
+</svg>
